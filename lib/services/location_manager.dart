@@ -13,6 +13,9 @@ import 'location/location_dispatch.dart';
 /// the plugin handle moving vs stationary. Includes a `grabLocationAndPing`
 /// method for manual location fetch/ping.
 class LocationManager with ChangeNotifier {
+  LocationManager._();
+  static final LocationManager instance = LocationManager._();
+
   final StreamController<LocationUpdate> _locationStreamController = StreamController.broadcast();
   final LocationService _locationService = LibreLocationService();
 

@@ -4,11 +4,24 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:grid_frontend/styles/tokens.dart';
 import 'package:grid_frontend/styles/grid_colors.dart';
 import 'package:grid_frontend/services/theme_controller.dart';
+import 'package:grid_frontend/services/location_manager.dart';
 import 'package:grid_frontend/screens/veilid_identity_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const GridApp());
+  _initLocation();
+}
+
+/// Best-effort location boot: start tracking so "Send location" has a real
+/// fix. Fire-and-forget so it never blocks first frame or crashes boot.
+Future<void> _initLocation() async {
+  try {
+    await LocationManager.instance.initialize();
+    await LocationManager.instance.startTracking();
+  } catch (e) {
+    debugPrint('[Location] init failed (non-fatal): $e');
+  }
 }
 
 class GridApp extends StatelessWidget {
