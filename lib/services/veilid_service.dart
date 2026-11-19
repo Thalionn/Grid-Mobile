@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:veilid/veilid.dart';
 
@@ -12,6 +14,7 @@ class VeilidService {
 
   bool _started = false;
   String? _identity;
+  final List<String> _contactRouteIds = [];
 
   Future<void> _ensureStarted() async {
     if (_started) return;
@@ -57,4 +60,32 @@ class VeilidService {
     _identity = keypair.key.toString();
     return _identity!;
   }
+
+  /// Creates a fresh private route and returns its import blob, base64url
+  /// encoded so it can be rendered as a QR for a contact to scan.
+  Future<String> shareRouteBlobB64() async {
+    await _ensureStarted();
+    // A route can only be allocated once the node is attached with a
+    // PublicInternet network class (otherwise newPrivateRoute throws TryAgain).
+    await Veilid.instance.waitForAttachmentCondition(
+      timeout: const Duration(seconds: 30),
+    );
+    final route = await Veilid.instance.newPrivateRoute();
+    return base64Url.encode(route.blob);
+  }
+
+  /// Imports a scanned private-route blob (base64url) as a new contact.
+  Future<void> importContact(String blobB64) async {
+    await _ensureStarted();
+    final blob = base64Url.decode(blobB64);
+    final routeId = await Veilid.instance.importRemotePrivateRoute(blob);
+    final id = routeId.toString();
+    if (!_contactRouteIds.contains(id)) {
+      _contactRouteIds.add(id);
+    }
+  }
+
+  /// Imported contact route ids (in-memory for the spike; persistence comes
+  /// with the real contacts layer).
+  List<String> get contactRouteIds => List.unmodifiable(_contactRouteIds);
 }
