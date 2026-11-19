@@ -18,6 +18,7 @@ import 'package:grid_frontend/services/database_service.dart';
 import 'package:grid_frontend/services/backwards_compatibility_service.dart';
 import 'package:grid_frontend/services/android_background_task.dart';
 import 'package:grid_frontend/services/veilid_service.dart';
+import 'package:grid_frontend/screens/veilid_identity_screen.dart';
 import 'package:grid_frontend/repositories/location_repository.dart';
 import 'package:grid_frontend/repositories/location_history_repository.dart';
 import 'package:grid_frontend/repositories/room_location_history_repository.dart';
@@ -523,10 +524,7 @@ Future<void> _boot() async {
                 const InAppNotificationOverlay(),
               ],
             ),
-            home: VersionWrapper(
-              client: client,
-              child: AppInitializer(client: client),
-            ),
+            home: const VeilidIdentityScreen(), // TEMP: spike QR screen
             routes: {
               '/welcome': (context) => WelcomeScreen(),
               '/server_select': (context) => ServerSelectScreen(),
