@@ -1072,7 +1072,7 @@ class _MapTabState extends State<MapTab> with TickerProviderStateMixin, WidgetsB
       // Ensure dotenv is loaded before proceeding.
       if (dotenv.env.isEmpty) {
         try {
-          await dotenv.load(fileName: ".env");
+          await dotenv.load(fileName: "env");
         } catch (e) {}
       }
 

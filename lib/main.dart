@@ -137,7 +137,7 @@ Future<void> _boot() async {
   }
 
   // Load .env file
-  await _tryBootStep('dotenv', dotenv.load(fileName: ".env"), const Duration(seconds: 5));
+  await _tryBootStep('dotenv', dotenv.load(fileName: "env"), const Duration(seconds: 5));
 
   // Initialize DatabaseService
   final databaseService = DatabaseService();

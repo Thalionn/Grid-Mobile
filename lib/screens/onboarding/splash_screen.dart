@@ -94,7 +94,7 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
     
     // Ensure environment variables are loaded
     try {
-      await dotenv.load(fileName: ".env");
+      await dotenv.load(fileName: "env");
     } catch (e) {
       print('Error loading .env file: $e');
     }
