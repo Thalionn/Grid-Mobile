@@ -25,6 +25,7 @@ import 'package:grid_frontend/widgets/add_sharing_preferences_modal.dart';
 import 'package:grid_frontend/widgets/grid/grid_avatar.dart';
 import 'package:grid_frontend/widgets/grid/grid_mono.dart';
 import 'package:grid_frontend/widgets/grid/grid_status_pill.dart';
+import 'package:grid_frontend/widgets/location_history_modal.dart';
 import 'package:grid_frontend/widgets/user_avatar_bloc.dart';
 import 'package:maplibre_gl/maplibre_gl.dart' as ml;
 import 'package:provider/provider.dart';
@@ -1153,11 +1154,8 @@ class _ContactProfileModalState extends State<ContactProfileModal> {
   // ────────────────────────────────────────────────────────────────────
 
   Widget _buildActionGrid() {
-    // Stripped to the two actions the app actually supports today.
-    // Message + History are intentionally absent — Grid doesn't keep a
-    // per-contact message thread or location history yet, so showing
-    // them as disabled tiles was just teasing functionality that
-    // doesn't exist.
+    // Route + Sharing + History. History opens the same location-history
+    // trail viewer used by groups, scoped to this 1:1 contact.
     final position =
         Provider.of<UserLocationProvider>(context, listen: false)
             .getUserLocation(widget.contact.userId);
@@ -1179,7 +1177,35 @@ class _ContactProfileModalState extends State<ContactProfileModal> {
         Expanded(
           child: _buildSharingActionTile(),
         ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: _ActionTile(
+            icon: Icons.history,
+            label: 'History',
+            onTap: _showLocationHistory,
+          ),
+        ),
       ],
+    );
+  }
+
+  void _showLocationHistory() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (BuildContext context) {
+        return ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.85,
+          ),
+          child: LocationHistoryModal(
+            userId: widget.contact.userId,
+            userName: widget.contact.displayName,
+            avatarUrl: widget.contact.avatarUrl,
+          ),
+        );
+      },
     );
   }
 

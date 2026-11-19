@@ -463,6 +463,8 @@ class _AddFriendModalState extends State<AddFriendModal>
     final doesExist = await widget.userService.userExists(fullMatrixId);
     final isSelf = widget.roomService.getMyUserId() == fullMatrixId;
 
+    if (!mounted) return;
+
     if (!doesExist || isSelf) {
       setState(() {
         _usernameError = 'Invalid username: @$username';

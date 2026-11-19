@@ -82,6 +82,11 @@ class ContactsBloc extends Bloc<ContactsEvent, ContactsState> {
         await roomService.leaveRoom(roomId);
         await userRepository.removeContact(event.userId);
 
+        // Clear the contact's stored location history (privacy). Room-scoped
+        // history is already dropped by RoomService.leaveRoom above; this
+        // removes the global per-user trail the contact viewer reads from.
+        await roomService.locationHistoryRepository.deleteUserHistory(event.userId);
+
         // Only remove from map if they're not in any other rooms (groups)
         if (!hasOtherRooms) {
           print("ContactsBloc: User not in any groups, removing from map");

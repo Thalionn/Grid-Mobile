@@ -191,6 +191,8 @@ class _ServerSelectScreenState extends State<ServerSelectScreen> with TickerProv
     bool isAvailable = await Provider.of<AuthProvider>(context, listen: false)
         .checkUsernameAvailability(username);
 
+    if (!mounted) return;
+
     setState(() {
       if (isAvailable) {
         _usernameStatusMessage = 'Username is available';

@@ -109,7 +109,7 @@ class _LocationHistoryModalState extends State<LocationHistoryModal> {
         
         // Fetch display names for members
         await _fetchUserDisplayNames(widget.memberIds!);
-        
+        if (!mounted) return;
         setState(() {
           _groupHistories = histories;
           _isLoading = false;
@@ -128,7 +128,7 @@ class _LocationHistoryModalState extends State<LocationHistoryModal> {
         
         // Fetch display names for members
         await _fetchUserDisplayNames(widget.memberIds!);
-        
+        if (!mounted) return;
         setState(() {
           _groupHistories = histories;
           _isLoading = false;
@@ -140,9 +140,10 @@ class _LocationHistoryModalState extends State<LocationHistoryModal> {
           _updateSliderRange();
         });
       } else {
-        // Load single user history (for individual contacts - future feature)
+        // Load single user history (for individual contacts).
         final historyRepo = context.read<LocationHistoryRepository>();
         final history = await historyRepo.getLocationHistory(widget.userId);
+        if (!mounted) return;
         setState(() {
           _locationHistory = history;
           _isLoading = false;
@@ -151,6 +152,7 @@ class _LocationHistoryModalState extends State<LocationHistoryModal> {
       }
     } catch (e) {
       print('Error loading location history: $e');
+      if (!mounted) return;
       setState(() {
         _isLoading = false;
       });
@@ -378,22 +380,24 @@ class _LocationHistoryModalState extends State<LocationHistoryModal> {
   }
   
   void _setupInitialMapView() {
-    if (!_initialMapSetupDone && _currentPositions.isNotEmpty && mounted) {
-      _initialMapSetupDone = true;
+    if (_initialMapSetupDone || _currentPositions.isEmpty || !mounted) return;
+    // Only mark the setup complete once the map is actually ready, so a
+    // history load that finishes before the map style resolves still gets
+    // its one-time camera fit from onStyleLoadedCallback.
+    if (!_mapReady) return;
 
-      if (!_mapReady) return;
+    _initialMapSetupDone = true;
 
-      try {
-        final points = _currentPositions.values.toList();
-        if (points.length == 1) {
-          _moveCamera(points.first, 12.0);
-        } else if (points.length > 1) {
-          final result = _calculateSmartZoom(points);
-          _moveCamera(result.center, result.zoom);
-        }
-      } catch (e) {
-        print('Error setting up initial map view: $e');
+    try {
+      final points = _currentPositions.values.toList();
+      if (points.length == 1) {
+        _moveCamera(points.first, 12.0);
+      } else if (points.length > 1) {
+        final result = _calculateSmartZoom(points);
+        _moveCamera(result.center, result.zoom);
       }
+    } catch (e) {
+      print('Error setting up initial map view: $e');
     }
   }
 

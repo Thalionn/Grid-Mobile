@@ -29,7 +29,6 @@ import '../blocs/avatar/avatar_bloc.dart';
 import '../blocs/avatar/avatar_state.dart';
 import 'contact_profile_modal.dart';
 import 'add_friend_modal.dart';
-import 'location_history_modal.dart';
 import 'package:grid_frontend/services/user_service.dart';
 import 'package:grid_frontend/services/sharing_state_notifier.dart';
 import 'package:grid_frontend/blocs/groups/groups_bloc.dart';
@@ -1053,25 +1052,6 @@ class ContactsSubscreenState extends State<ContactsSubscreen> with TickerProvide
     );
   }
 
-  void _showLocationHistory(ContactDisplay contact) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (BuildContext context) {
-        return ConstrainedBox(
-          constraints: BoxConstraints(
-            maxHeight: MediaQuery.of(context).size.height * 0.85,
-          ),
-          child: LocationHistoryModal(
-            userId: contact.userId,
-            userName: contact.displayName,
-            avatarUrl: contact.avatarUrl,
-          ),
-        );
-      },
-    );
-  }
 }
 
 // ── Internal helpers ────────────────────────────────────────────────

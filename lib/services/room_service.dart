@@ -346,6 +346,16 @@ class RoomService {
         print('Error deleting map icons for room $roomId: $e');
       }
 
+      // Delete stored location history for this room so a left/forgotten
+      // room doesn't leave an encrypted trail behind (privacy). SQLite
+      // foreign keys are not enforced in this app, so the RoomLocationHistory
+      // rows would otherwise survive the room delete.
+      try {
+        await roomLocationHistoryRepository?.deleteRoomHistory(roomId);
+      } catch (e) {
+        print('Error deleting location history for room $roomId: $e');
+      }
+
       await roomRepository.leaveRoom(roomId, userId);
       return true;
     } catch (e) {
