@@ -5,6 +5,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:grid_frontend/services/veilid_service.dart';
 import 'package:grid_frontend/services/location_manager.dart';
 import 'package:grid_frontend/screens/veilid_scan_screen.dart';
+import 'package:grid_frontend/screens/veilid_map_screen.dart';
 
 /// The P2P "home": your shareable contact QR, scan-to-add, and the location
 /// send/receive proof. No login, no server.
@@ -120,7 +121,18 @@ class _VeilidIdentityScreenState extends State<VeilidIdentityScreen> {
     final contacts = VeilidService.instance.contactRouteIds;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Your Grid ID')),
+      appBar: AppBar(
+        title: const Text('Your Grid ID'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.map_outlined),
+            tooltip: 'Map',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const VeilidMapScreen()),
+            ),
+          ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [

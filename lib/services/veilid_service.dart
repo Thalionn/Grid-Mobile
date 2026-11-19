@@ -20,6 +20,10 @@ class VeilidService {
   StreamSubscription<VeilidUpdate>? _updateSub;
   final List<RouteId> _contacts = [];
 
+  // Latest location per contact, keyed by the receiving route id (the route
+  // this node created and shared). In-memory for the spike.
+  final Map<String, Map<String, dynamic>> _contactLocations = {};
+
   final StreamController<Map<String, dynamic>> _locationController =
       StreamController<Map<String, dynamic>>.broadcast();
 
@@ -27,6 +31,10 @@ class VeilidService {
   /// `routeId`, and `sender`.
   Stream<Map<String, dynamic>> get locationUpdates =>
       _locationController.stream;
+
+  /// Latest location per contact (keyed by route id), for map markers.
+  Map<String, Map<String, dynamic>> get contactLocations =>
+      Map.unmodifiable(_contactLocations);
 
   Future<void> _ensureStarted() async {
     if (_started) return;
@@ -71,13 +79,17 @@ class VeilidService {
     try {
       final payload = jsonDecode(utf8.decode(update.message));
       if (payload is Map && payload['type'] == 'location') {
-        _locationController.add({
+        final loc = {
           'lat': (payload['lat'] as num).toDouble(),
           'lng': (payload['lng'] as num).toDouble(),
           'accuracy': (payload['accuracy'] as num?)?.toDouble(),
           'routeId': update.routeId,
           'sender': update.sender?.toString(),
-        });
+          'ts': DateTime.now(),
+        };
+        _locationController.add(loc);
+        final key = update.routeId ?? update.sender?.toString() ?? 'unknown';
+        _contactLocations[key] = loc;
       }
     } catch (_) {
       // Ignore malformed/unexpected messages.
