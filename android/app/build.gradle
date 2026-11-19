@@ -2,7 +2,19 @@ plugins {
     id "com.android.application"
     id "kotlin-android"
     id "dev.flutter.flutter-gradle-plugin"
-    id "com.google.gms.google-services"
+}
+
+// The Google Services plugin needs google-services.json (Firebase config),
+// which is not committed to the repo. Apply it only when a config file is
+// present so a plain debug build without Firebase still works. FCM push is
+// optional at runtime (Firebase.initializeApp is wrapped in try/catch and the
+// app falls back to UnifiedPush).
+def hasGoogleServicesJson =
+    file('google-services.json').exists() ||
+    file('src/google-services.json').exists() ||
+    file('src/debug/google-services.json').exists()
+if (hasGoogleServicesJson) {
+    apply plugin: 'com.google.gms.google-services'
 }
 
 // Load local.properties
@@ -75,8 +87,15 @@ android {
         release {
             keyAlias localProperties.getProperty('keyAlias')
             keyPassword localProperties.getProperty('keyPassword')
-            storeFile file(localProperties.getProperty('storeFile'))
             storePassword localProperties.getProperty('storePassword')
+            // Only set the keystore path when one is configured. Without a
+            // signing `storeFile` in local.properties, `file(null)` throws
+            // "path may not be null" on every build — including debug builds
+            // that never use the release config.
+            def storeFilePath = localProperties.getProperty('storeFile')
+            if (storeFilePath != null && !storeFilePath.isEmpty()) {
+                storeFile file(storeFilePath)
+            }
         }
     }
 
