@@ -19,8 +19,6 @@ dependencies:
   flutter_map_marker_cluster: ^1.3.6
   provider: ^6.1.2
   shared_preferences: ^2.2.3
-  matrix: ^4.0.0
-  flutter_vodozemac: ^0.4.1
   flutter_secure_storage: ^9.2.2
   flutter_emoji: ^2.5.1
   path: ^1.9.1
@@ -58,7 +56,6 @@ dependencies:
   intl: ^0.19.0
   font_awesome_flutter: ^11.0.0
   share_plus: ^10.1.2
-  passkeys: ^2.17.0
   webview_flutter: ^4.10.0
   firebase_core: ^3.8.0
   firebase_messaging: ^15.1.6
@@ -106,12 +103,6 @@ dev_dependencies:
   mocktail: ^1.0.4
 
 dependency_overrides:
-  flutter_rust_bridge:
-    path: patches/flutter_rust_bridge
-  # Local fork of flutter_vodozemac 0.4.1 with cargokit patched for Gradle 9
-  # (`Project.exec()` was removed in Gradle 9; replaced with providers.exec).
-  flutter_vodozemac:
-    path: patches/flutter_vodozemac
   # Fork of maplibre_gl v0.26.1 with upstream PR #820 backported + the
   # zero-frame guard extended to camera#move and camera#animate handlers.
   # Fixes the SIGABRT out of mbgl::LatLng that no Dart-side gating could

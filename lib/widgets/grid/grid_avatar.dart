@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../../styles/grid_colors.dart';
-import '../user_avatar_bloc.dart';
 
 /// Status indicator at the bottom-right of an avatar — viewer-facing
 /// freshness tri-state. Never expresses the friend's chosen sharing mode
@@ -110,25 +109,17 @@ class GridAvatar extends StatelessWidget {
         ],
       ),
       alignment: Alignment.center,
-      child: userId != null
+      child: imageUrl != null
           ? ClipOval(
-              child: SizedBox(
+              child: Image.network(
+                imageUrl!,
                 width: size,
                 height: size,
-                child: UserAvatarBloc(userId: userId!, size: size),
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => _fallbackInitial(),
               ),
             )
-          : imageUrl != null
-              ? ClipOval(
-                  child: Image.network(
-                    imageUrl!,
-                    width: size,
-                    height: size,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => _fallbackInitial(),
-                  ),
-                )
-              : _fallbackInitial(),
+          : _fallbackInitial(),
     );
 
     Widget body = inner;

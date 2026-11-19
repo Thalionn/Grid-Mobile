@@ -7,11 +7,7 @@ import 'package:encrypt/encrypt.dart';
 import 'package:grid_frontend/services/secure_storage_provider.dart';
 import 'package:grid_frontend/repositories/location_repository.dart';
 import 'package:grid_frontend/repositories/location_history_repository.dart';
-import 'package:grid_frontend/repositories/room_location_history_repository.dart';
-import 'package:grid_frontend/repositories/room_repository.dart';
-import 'package:grid_frontend/repositories/user_repository.dart';
 import 'package:grid_frontend/repositories/sharing_preferences_repository.dart';
-import 'package:grid_frontend/repositories/user_keys_repository.dart';
 import 'package:grid_frontend/repositories/map_icon_repository.dart';
 
 /// Thrown when the encryption key can't be found under any known
@@ -75,13 +71,9 @@ class DatabaseService {
       version: 4,  // Increment version for new RoomLocationHistory table
       onCreate: (db, version) async {
         await _initializeEncryptionKey();
-        await UserRepository.createTables(db);
-        await RoomRepository.createTables(db);
         await LocationRepository.createTable(db);
         await LocationHistoryRepository.createTable(db);
-        await RoomLocationHistoryRepository.createTable(db);
         await SharingPreferencesRepository.createTable(db);
-        await UserKeysRepository.createTable(db);
         await MapIconRepository.createTable(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
@@ -90,9 +82,6 @@ class DatabaseService {
         }
         if (oldVersion < 3) {
           await MapIconRepository.createTable(db);
-        }
-        if (oldVersion < 4) {
-          await RoomLocationHistoryRepository.createTable(db);
         }
       },
     );
@@ -230,7 +219,7 @@ class DatabaseService {
   /// Clear all data from the database
   Future<void> clearAllData() async {
     final db = await database;
-    final tables = ['Users', 'UserLocations', 'LocationHistory', 'RoomLocationHistory', 'Rooms', 'SharingPreferences', 'UserKeys', 'MapIcons'];
+    final tables = ['UserLocations', 'LocationHistory', 'SharingPreferences', 'MapIcons'];
     for (final table in tables) {
       await db.delete(table);
     }
