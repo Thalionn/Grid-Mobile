@@ -1,10 +1,13 @@
+import 'dart:async';
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:grid_frontend/services/veilid_service.dart';
 import 'package:grid_frontend/screens/veilid_scan_screen.dart';
 
-/// The P2P "home": shows your shareable contact QR (a Veilid private-route
-/// blob) and lets you scan someone else's to add them. No login, no server.
+/// The P2P "home": your shareable contact QR, scan-to-add, and the location
+/// send/receive proof. No login, no server.
 class VeilidIdentityScreen extends StatefulWidget {
   const VeilidIdentityScreen({super.key});
 
@@ -17,12 +20,25 @@ class _VeilidIdentityScreenState extends State<VeilidIdentityScreen> {
   String? _shareBlob;
   String? _shareError;
   bool _loadingShare = false;
+  bool _sending = false;
+
+  final List<Map<String, dynamic>> _received = [];
+  StreamSubscription<Map<String, dynamic>>? _locSub;
 
   @override
   void initState() {
     super.initState();
     _loadIdentity();
     _loadShareBlob();
+    _locSub = VeilidService.instance.locationUpdates.listen((loc) {
+      if (mounted) setState(() => _received.add(loc));
+    });
+  }
+
+  @override
+  void dispose() {
+    _locSub?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadIdentity() async {
@@ -54,6 +70,31 @@ class _VeilidIdentityScreenState extends State<VeilidIdentityScreen> {
       MaterialPageRoute(builder: (_) => const VeilidScanScreen()),
     );
     if (added == true && mounted) setState(() {});
+  }
+
+  Future<void> _sendLocation() async {
+    setState(() => _sending = true);
+    // Small random offset so successive sends are visibly distinct during the
+    // spike; real GPS comes with the full location layer.
+    final rng = Random();
+    final lat = 44.0966 + (rng.nextDouble() - 0.5) * 0.01;
+    final lng = -91.1689 + (rng.nextDouble() - 0.5) * 0.01;
+    try {
+      await VeilidService.instance.sendLocation(lat, lng, accuracy: 12.0);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Sent to ${VeilidService.instance.contactRouteIds.length} contact(s)')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Send failed: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
   }
 
   @override
@@ -105,13 +146,27 @@ class _VeilidIdentityScreenState extends State<VeilidIdentityScreen> {
               style: theme.textTheme.bodySmall,
             ),
           const SizedBox(height: 24),
-          FilledButton.icon(
-            onPressed: _openScan,
-            icon: const Icon(Icons.qr_code_scanner),
-            label: const Text('Scan to add contact'),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: _openScan,
+                  icon: const Icon(Icons.qr_code_scanner),
+                  label: const Text('Scan'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton.tonalIcon(
+                  onPressed: _sending ? null : _sendLocation,
+                  icon: const Icon(Icons.my_location),
+                  label: const Text('Send location'),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 32),
-          Text('Contacts', style: theme.textTheme.titleMedium),
+          Text('Contacts (${contacts.length})', style: theme.textTheme.titleMedium),
           const SizedBox(height: 8),
           if (contacts.isEmpty)
             Text('No contacts yet', style: theme.textTheme.bodySmall)
@@ -121,11 +176,31 @@ class _VeilidIdentityScreenState extends State<VeilidIdentityScreen> {
                 dense: true,
                 contentPadding: EdgeInsets.zero,
                 leading: const Icon(Icons.person_outline),
+                title: Text(id,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 12)),
+              ),
+          const SizedBox(height: 24),
+          Text('Received locations', style: theme.textTheme.titleMedium),
+          const SizedBox(height: 8),
+          if (_received.isEmpty)
+            Text('None yet', style: theme.textTheme.bodySmall)
+          else
+            for (final loc in _received.reversed)
+              ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.location_on_outlined),
                 title: Text(
-                  id,
+                  '${loc['lat']?.toStringAsFixed(5)}, ${loc['lng']?.toStringAsFixed(5)}',
+                  style: const TextStyle(fontSize: 13),
+                ),
+                subtitle: Text(
+                  'from ${loc['sender'] ?? loc['routeId'] ?? 'unknown'}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12),
+                  style: const TextStyle(fontSize: 11),
                 ),
               ),
         ],

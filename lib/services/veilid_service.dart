@@ -1,20 +1,32 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:veilid/veilid.dart';
 
-/// Minimal Veilid integration for the P2P spike.
+/// Veilid integration for the P2P app.
 ///
-/// Right now this just proves the Veilid core initializes on-device and
-/// exposes a stable, QR-encodable identity (a public key string). It is
-/// intentionally small: the real contact/location layers come later.
+/// Identity is a local keypair; contacts are imported private routes. Location
+/// is shared by sending JSON app messages over those routes, and received via
+/// the Veilid update stream.
 class VeilidService {
   VeilidService._();
   static final VeilidService instance = VeilidService._();
 
   bool _started = false;
   String? _identity;
-  final List<String> _contactRouteIds = [];
+  VeilidRoutingContext? _routingContext;
+  StreamSubscription<VeilidUpdate>? _updateSub;
+  final List<RouteId> _contacts = [];
+
+  final StreamController<Map<String, dynamic>> _locationController =
+      StreamController<Map<String, dynamic>>.broadcast();
+
+  /// Received contact locations, as maps with `lat`, `lng`, `accuracy`,
+  /// `routeId`, and `sender`.
+  Stream<Map<String, dynamic>> get locationUpdates =>
+      _locationController.stream;
 
   Future<void> _ensureStarted() async {
     if (_started) return;
@@ -45,10 +57,31 @@ class VeilidService {
         allowInsecureFallback: true,
       ),
     );
-    await Veilid.instance.startupVeilidCore(patched);
+
+    final updates = await Veilid.instance.startupVeilidCore(patched);
+    _routingContext = await Veilid.instance.routingContext();
+    _updateSub = updates.listen(_handleUpdate);
     await Veilid.instance.attach();
 
     _started = true;
+  }
+
+  void _handleUpdate(VeilidUpdate update) {
+    if (update is! VeilidAppMessage) return;
+    try {
+      final payload = jsonDecode(utf8.decode(update.message));
+      if (payload is Map && payload['type'] == 'location') {
+        _locationController.add({
+          'lat': (payload['lat'] as num).toDouble(),
+          'lng': (payload['lng'] as num).toDouble(),
+          'accuracy': (payload['accuracy'] as num?)?.toDouble(),
+          'routeId': update.routeId,
+          'sender': update.sender?.toString(),
+        });
+      }
+    } catch (_) {
+      // Ignore malformed/unexpected messages.
+    }
   }
 
   /// Returns a stable identity string (a Veilid public key) suitable for
@@ -80,12 +113,34 @@ class VeilidService {
     final blob = base64Url.decode(blobB64);
     final routeId = await Veilid.instance.importRemotePrivateRoute(blob);
     final id = routeId.toString();
-    if (!_contactRouteIds.contains(id)) {
-      _contactRouteIds.add(id);
+    if (!_contacts.any((r) => r.toString() == id)) {
+      _contacts.add(routeId);
     }
   }
 
-  /// Imported contact route ids (in-memory for the spike; persistence comes
-  /// with the real contacts layer).
-  List<String> get contactRouteIds => List.unmodifiable(_contactRouteIds);
+  /// Sends the current location to every contact over their private route.
+  Future<void> sendLocation(double lat, double lng, {double? accuracy}) async {
+    await _ensureStarted();
+    final context = _routingContext;
+    if (context == null || _contacts.isEmpty) return;
+    final payload = jsonEncode({
+      'type': 'location',
+      'lat': lat,
+      'lng': lng,
+      'accuracy': accuracy,
+      'ts': DateTime.now().toIso8601String(),
+    });
+    final bytes = Uint8List.fromList(utf8.encode(payload));
+    for (final routeId in _contacts) {
+      try {
+        await context.appMessage(TargetRouteId(routeId: routeId), bytes);
+      } catch (e) {
+        debugPrint('[Veilid] sendLocation failed for ${routeId.toString()}: $e');
+      }
+    }
+  }
+
+  /// Imported contact route ids, as strings (in-memory for the spike).
+  List<String> get contactRouteIds =>
+      List.unmodifiable(_contacts.map((r) => r.toString()));
 }
