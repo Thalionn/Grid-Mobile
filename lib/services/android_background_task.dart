@@ -141,7 +141,10 @@ Future<void> processBackgroundLocation(
     if (_cachedClient == null) {
       print('[HeadlessTask] 🔄 Initializing Matrix client (first run)');
 
-      await vod.init();
+      // Do NOT call vod.init() here: the client's vodozemacInit callback
+      // (below) is what initializes vodozemac, and an explicit init here makes
+      // client.init() call it a second time -> "Should not initialize
+      // flutter_rust_bridge twice" in the headless isolate.
 
       _cachedDatabaseService = DatabaseService();
       await _cachedDatabaseService!.initDatabase();
@@ -236,8 +239,9 @@ Future<void> processBackgroundLocation(
 
     // Note: We DON'T dispose the client here since we're caching it for reuse!
     print('[HeadlessTask] ✓ Location processing complete');
-  } catch (e) {
+  } catch (e, st) {
     print('[Background Task Error]: $e');
+    print('[Background Task StackTrace]: $st');
 
     // Clear cache on error so it reinitializes fresh next time
     print('[HeadlessTask] ⚠️  Error occurred, clearing cache for next run');
