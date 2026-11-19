@@ -65,6 +65,11 @@ dependencies:
   flutter_local_notifications: ^18.0.0
   unifiedpush: ^6.0.1
   google_api_availability: ^5.0.1
+  veilid:
+    git:
+      url: https://gitlab.com/veilid/veilid.git
+      path: veilid-flutter
+      ref: v0.5.8
 
 
 flutter_launcher_icons:

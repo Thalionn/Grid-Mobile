@@ -17,6 +17,7 @@ import 'package:flutter_vodozemac/flutter_vodozemac.dart' as vod;
 import 'package:grid_frontend/services/database_service.dart';
 import 'package:grid_frontend/services/backwards_compatibility_service.dart';
 import 'package:grid_frontend/services/android_background_task.dart';
+import 'package:grid_frontend/services/veilid_service.dart';
 import 'package:grid_frontend/repositories/location_repository.dart';
 import 'package:grid_frontend/repositories/location_history_repository.dart';
 import 'package:grid_frontend/repositories/room_location_history_repository.dart';
@@ -177,6 +178,17 @@ Future<void> _boot() async {
     shareKeysWith: ShareKeysWith.all,
   );
   await client.init().timeout(const Duration(seconds: 30));
+
+  // P2P spike: best-effort Veilid init + identity generation. This proves the
+  // Veilid core boots on-device and yields a QR-encodable identity string.
+  try {
+    final veilidIdentity = await VeilidService.instance
+        .identity()
+        .timeout(const Duration(seconds: 30));
+    debugPrint('[Veilid] Identity ready: $veilidIdentity');
+  } catch (e) {
+    debugPrint('[Veilid] Init failed (non-fatal): $e');
+  }
 
   // Forward room keys unless the requester has positively left / been banned.
   // Fail-open: Grid rooms only carry current location (no history worth
