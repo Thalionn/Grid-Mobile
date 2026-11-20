@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
@@ -9,6 +10,7 @@ import 'package:veilid/veilid.dart';
 import 'package:grid_frontend/models/location_history.dart';
 import 'package:grid_frontend/models/place.dart';
 import 'package:grid_frontend/repositories/location_history_repository.dart';
+import 'package:grid_frontend/utilities/lat_lng_validation.dart';
 
 /// Veilid integration for the P2P app.
 ///
@@ -33,6 +35,25 @@ class VeilidService {
   final Map<String, RouteId> _contactRoutes = {}; // address -> imported route
   final Map<String, DateTime> _contactRouteResolvedAt = {};
 
+  // Pinned identity public keys (address -> key string), learned from the
+  // DHT record owner. Only the record owner can publish a route blob, so the
+  // owner key is the contact's authenticated identity. Persisted.
+  final Map<String, String> _contactPublicKeys = {};
+  final Map<String, DateTime> _keyLookupAttemptedAt = {};
+
+  // Anti-replay / anti-flood: recently seen message nonces (insertion order)
+  // and the time we last accepted anything from each sender.
+  final Set<String> _seenNonces = <String>{};
+  final Map<String, DateTime> _lastAcceptedAt = {};
+  int _rejectedMessages = 0;
+  DateTime _lastRejectLog = DateTime.fromMillisecondsSinceEpoch(0);
+
+  // Serializes message handling so signature verification (which can await a
+  // DHT lookup) cannot reorder fixes or interleave mutable state updates.
+  Future<void> _inbox = Future.value();
+
+  final Random _random = Random.secure();
+
   // Addresses the user has paused (per-contact sharing off), persisted.
   final Set<String> _pausedAddresses = {};
 
@@ -41,6 +62,7 @@ class VeilidService {
   static const _myRecordKeyPrefKey = 'veilid_my_record_key';
   static const _myNamePrefKey = 'veilid_display_name';
   static const _contactNamesPrefKey = 'veilid_contact_names';
+  static const _contactKeysPrefKey = 'veilid_contact_public_keys';
   // User-secret key (Veilid protected store) for the identity keypair.
   static const _myKeyPairSecretKey = 'grid_identity_keypair';
 
@@ -187,6 +209,17 @@ class VeilidService {
       } catch (_) {}
     }
 
+    // Restore pinned identity keys for contacts we already verified.
+    final keysRaw = prefs.getString(_contactKeysPrefKey);
+    if (keysRaw != null && keysRaw.isNotEmpty) {
+      try {
+        final map = jsonDecode(keysRaw) as Map<String, dynamic>;
+        _contactPublicKeys
+          ..clear()
+          ..addAll(map.map((k, v) => MapEntry(k, v as String)));
+      } catch (_) {}
+    }
+
     _contactsChangedController.add(null);
   }
 
@@ -197,7 +230,13 @@ class VeilidService {
 
   void _handleUpdate(VeilidUpdate update) {
     if (update is VeilidAppMessage) {
-      _handleAppMessage(update);
+      // Chain handlers so fixes are processed in arrival order even when a
+      // handler awaits a DHT lookup to verify the sender's identity.
+      _inbox = _inbox.then((_) => _handleAppMessage(update)).catchError(
+        (Object e) {
+          debugPrint('[Veilid] message handler error: $e');
+        },
+      );
     } else if (update is VeilidUpdateRouteChange) {
       _handleRouteChange(update);
     }
@@ -215,37 +254,280 @@ class VeilidService {
     }).whenComplete(() => _republishing = false));
   }
 
-  void _handleAppMessage(VeilidAppMessage update) {
+  /// Handle an incoming app message.
+  ///
+  /// This is the trust boundary. A location payload is accepted only when it
+  /// comes from a linked contact, is fresh, carries a valid signature made by
+  /// the identity key that owns that contact's DHT record, and is not a
+  /// replay or a flood. Everything downstream (map, history, places, movement
+  /// alerts) assumes the data passing this point was authenticated, so an
+  /// unauthenticated peer can no longer move markers, poison a trail, or
+  /// trigger fake alerts.
+  Future<void> _handleAppMessage(VeilidAppMessage update) async {
+    final Map<String, dynamic> payload;
     try {
-      final payload = jsonDecode(utf8.decode(update.message));
-      if (payload is Map && payload['type'] == 'location') {
-        final lat = (payload['lat'] as num).toDouble();
-        final lng = (payload['lng'] as num).toDouble();
-        final from = payload['from'] as String?;
-        final now = DateTime.now();
-        final prev = from != null ? _contactLocations[from] : null;
-        final loc = {
-          'lat': lat,
-          'lng': lng,
-          'accuracy': (payload['accuracy'] as num?)?.toDouble(),
-          'from': from,
-          'routeId': update.routeId,
-          'sender': update.sender?.toString(),
-          'ts': now,
-        };
-        _locationController.add(loc);
-        final key = from ?? update.routeId ?? update.sender?.toString() ?? 'unknown';
-        _contactLocations[key] = loc;
-        // Detect movement transitions ("started moving" / "stopped").
-        if (from != null && prev != null) {
-          _detectMovement(from, prev, lat, lng, now);
-        }
-        // Record the sender's trail to device-local history (best-effort).
-        if (from != null) _recordHistory(from, lat, lng);
+      final decoded = jsonDecode(utf8.decode(update.message));
+      if (decoded is! Map<String, dynamic>) {
+        _reject('malformed payload');
+        return;
       }
+      payload = decoded;
     } catch (_) {
-      // Ignore malformed/unexpected messages.
+      _reject('malformed payload');
+      return;
     }
+    if (payload['type'] != 'location') return;
+    if (payload['v'] != _locationProtocolVersion) {
+      _reject('unsupported protocol version');
+      return;
+    }
+
+    final from = payload['from'];
+    if (from is! String || from.isEmpty || from.length > 256) {
+      _reject('invalid sender');
+      return;
+    }
+    // Allowlist: only people the user linked can influence this device.
+    if (!_contactAddresses.contains(from)) {
+      _reject('sender is not a contact');
+      return;
+    }
+
+    final lat = (payload['lat'] as num?)?.toDouble();
+    final lng = (payload['lng'] as num?)?.toDouble();
+    if (lat == null || lng == null || !isFiniteLatLng(lat, lng)) {
+      // NaN/Infinity/out-of-range would reach MapLibre's native LatLng and
+      // abort the process, so it must never get past this point.
+      _reject('invalid coordinates');
+      return;
+    }
+    var accuracy = (payload['accuracy'] as num?)?.toDouble();
+    if (accuracy != null &&
+        (!accuracy.isFinite || accuracy < 0 || accuracy > 1e6)) {
+      accuracy = null;
+    }
+
+    final tsRaw = payload['ts'];
+    final nonce = payload['nonce'];
+    final signature = payload['sig'];
+    if (tsRaw is! String || nonce is! String || signature is! String) {
+      _reject('missing signature fields');
+      return;
+    }
+    if (tsRaw.length > 64 || nonce.length > 64 || signature.length > 256) {
+      _reject('oversized signature fields');
+      return;
+    }
+    final ts = DateTime.tryParse(tsRaw);
+    if (ts == null) {
+      _reject('invalid timestamp');
+      return;
+    }
+    final now = DateTime.now();
+    if (now.toUtc().difference(ts.toUtc()).abs() > _maxClockSkew) {
+      _reject('stale timestamp');
+      return;
+    }
+    // A repeated nonce means the same message was delivered twice or replayed.
+    // Freshness above bounds how long a captured message stays usable, so a
+    // nonce cache is enough replay protection — and unlike a timestamp
+    // watermark it survives a sender's clock adjustment.
+    if (_seenNonces.contains(nonce)) {
+      _reject('replayed message');
+      return;
+    }
+    final lastAccepted = _lastAcceptedAt[from];
+    if (lastAccepted != null &&
+        now.difference(lastAccepted) < _minBetweenMessages) {
+      _reject('rate limited');
+      return;
+    }
+
+    final publicKey = await _publicKeyFor(from);
+    if (publicKey == null) {
+      _reject('unknown identity key');
+      return;
+    }
+    final signed = _locationSigningBytes(
+      from: from,
+      ts: tsRaw,
+      nonce: nonce,
+      lat: lat,
+      lng: lng,
+      accuracy: accuracy,
+    );
+    if (!await _verifySignature(publicKey, signed, signature)) {
+      _reject('bad signature');
+      return;
+    }
+
+    _seenNonces.add(nonce);
+    if (_seenNonces.length > 512) _seenNonces.remove(_seenNonces.first);
+    _lastAcceptedAt[from] = now;
+
+    final prev = _contactLocations[from];
+    final loc = <String, dynamic>{
+      'lat': lat,
+      'lng': lng,
+      'accuracy': accuracy,
+      'from': from,
+      'routeId': update.routeId,
+      'sender': update.sender?.toString(),
+      'ts': now,
+    };
+    _locationController.add(loc);
+    _contactLocations[from] = loc;
+    // Detect movement transitions ("started moving" / "stopped").
+    if (prev != null) _detectMovement(from, prev, lat, lng, now);
+    // Record the sender's trail to device-local history (best-effort).
+    _recordHistory(from, lat, lng);
+  }
+
+  static const int _locationProtocolVersion = 2;
+  static const String _locationSigningPrefix = 'grid-loc-v2';
+  static const Duration _maxClockSkew = Duration(minutes: 5);
+  static const Duration _minBetweenMessages = Duration(milliseconds: 500);
+  static const Duration _keyLookupCooldown = Duration(seconds: 30);
+
+  VeilidCryptoSystem? _cryptoSystem;
+  CryptoKind? _cryptoSystemKind;
+
+  Future<VeilidCryptoSystem> _crypto(CryptoKind kind) async {
+    if (_cryptoSystem != null && _cryptoSystemKind == kind) return _cryptoSystem!;
+    _cryptoSystem = await Veilid.instance.getCryptoSystem(kind);
+    _cryptoSystemKind = kind;
+    return _cryptoSystem!;
+  }
+
+  /// The bytes covered by a location signature. Both sides must derive this
+  /// identically: fixed 6-decimal coordinates, raw timestamp string, raw nonce.
+  Uint8List _locationSigningBytes({
+    required String from,
+    required String ts,
+    required String nonce,
+    required double lat,
+    required double lng,
+    double? accuracy,
+  }) {
+    final canonical = [
+      _locationSigningPrefix,
+      from,
+      ts,
+      nonce,
+      lat.toStringAsFixed(6),
+      lng.toStringAsFixed(6),
+      accuracy == null ? '' : accuracy.toStringAsFixed(1),
+    ].join('\n');
+    return Uint8List.fromList(utf8.encode(canonical));
+  }
+
+  Future<String> _signLocation({
+    required String from,
+    required String ts,
+    required String nonce,
+    required double lat,
+    required double lng,
+    double? accuracy,
+  }) async {
+    final keyPair = await _keyPairOrCreate();
+    final crypto = await _crypto(keyPair.key.kind);
+    final signature = await crypto.signWithKeyPair(
+      keyPair,
+      _locationSigningBytes(
+        from: from,
+        ts: ts,
+        nonce: nonce,
+        lat: lat,
+        lng: lng,
+        accuracy: accuracy,
+      ),
+    );
+    return signature.toString();
+  }
+
+  Future<bool> _verifySignature(
+      PublicKey publicKey, Uint8List data, String signature) async {
+    try {
+      final parts = signature.split(':');
+      if (parts.length < 2 || parts[0].codeUnits.length != 4) return false;
+      final kind = CryptoKind.fromString(parts[0]);
+      if (kind != publicKey.kind) return false;
+      final crypto = await _crypto(kind);
+      return await crypto.verify(
+        publicKey,
+        data,
+        Signature(
+          kind: kind,
+          value: BareSignature.fromString(parts.sublist(1).join(':')),
+        ),
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
+  PublicKey? _parsePublicKey(String value) {
+    try {
+      final parts = value.split(':');
+      if (parts.length < 2 || parts[0].codeUnits.length != 4) return null;
+      return PublicKey(
+        kind: CryptoKind.fromString(parts[0]),
+        value: BarePublicKey.fromString(parts.sublist(1).join(':')),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// The pinned identity key for [address]. Pins it from the DHT record owner
+  /// on first use; only the record owner can publish that contact's route, so
+  /// the owner key is what authenticates their messages.
+  Future<PublicKey?> _publicKeyFor(String address) async {
+    final pinned = _contactPublicKeys[address];
+    if (pinned != null) {
+      final parsed = _parsePublicKey(pinned);
+      if (parsed != null) return parsed;
+    }
+    final attempted = _keyLookupAttemptedAt[address];
+    final now = DateTime.now();
+    if (attempted != null && now.difference(attempted) < _keyLookupCooldown) {
+      return null;
+    }
+    _keyLookupAttemptedAt[address] = now;
+    try {
+      final context = _routingContext;
+      if (context == null) return null;
+      final desc = await context.openDHTRecord(RecordKey.fromString(address));
+      await _pinContactKey(address, desc.owner);
+      return desc.owner;
+    } catch (e) {
+      debugPrint('[Veilid] identity key lookup failed for $address: $e');
+      return null;
+    }
+  }
+
+  Future<void> _pinContactKey(String address, PublicKey owner) async {
+    final value = owner.toString();
+    if (_contactPublicKeys[address] == value) return;
+    _contactPublicKeys[address] = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_contactKeysPrefKey, jsonEncode(_contactPublicKeys));
+  }
+
+  String _newNonce() {
+    final bytes = List<int>.generate(12, (_) => _random.nextInt(256));
+    return base64Url.encode(bytes);
+  }
+
+  /// Count a dropped message; log at most once per 30s so a flood cannot turn
+  /// into a log storm (and so we never log coordinates or full addresses).
+  void _reject(String reason) {
+    _rejectedMessages++;
+    final now = DateTime.now();
+    if (now.difference(_lastRejectLog) < const Duration(seconds: 30)) return;
+    _lastRejectLog = now;
+    debugPrint(
+        '[Veilid] dropped $_rejectedMessages message(s); last reason: $reason');
   }
 
   void _recordHistory(String address, double lat, double lng) {
@@ -469,7 +751,11 @@ class VeilidService {
   Future<RouteId> _importContactRoute(String address) async {
     final recordKey = RecordKey.fromString(address);
     final context = _routingContext!;
-    await context.openDHTRecord(recordKey);
+    final desc = await context.openDHTRecord(recordKey);
+    // The record's owner is the contact's identity key: only they can write
+    // the route blob we are about to import. Pin it so later messages can be
+    // authenticated against it.
+    await _pinContactKey(address, desc.owner);
     final value = await context.getDHTValue(recordKey, 0, forceRefresh: true);
     if (value == null || value.data.isEmpty) {
       throw StateError('Contact has no published route');
@@ -521,19 +807,45 @@ class VeilidService {
   /// route for a short TTL so continuous sharing doesn't re-hit the DHT on
   /// every fix; a stale/dead route is re-resolved after the TTL.
   Future<void> sendLocation(double lat, double lng, {double? accuracy}) async {
+    // Never sign or transmit a GPS value that could crash a recipient.
+    if (!isFiniteLatLng(lat, lng)) return;
     await _ensureStarted();
     final context = _routingContext;
-    if (context == null || _contactAddresses.isEmpty) return;
+    // Snapshot the list: adds/removes can land while we await below.
+    final addresses = List<String>.from(_contactAddresses);
+    if (context == null || addresses.isEmpty) return;
+
+    // Quantize to the precision the signature covers (sub-centimetre), so the
+    // signed bytes and the transmitted value are identical.
+    final lat6 = double.parse(lat.toStringAsFixed(6));
+    final lng6 = double.parse(lng.toStringAsFixed(6));
+
+    // Sign the fix. The signature is what proves to recipients that this
+    // really is us and not anyone else who can reach their route.
+    final from = await myAddress();
+    final ts = DateTime.now().toUtc().toIso8601String();
+    final nonce = _newNonce();
+    final signature = await _signLocation(
+      from: from,
+      ts: ts,
+      nonce: nonce,
+      lat: lat6,
+      lng: lng6,
+      accuracy: accuracy,
+    );
     final payload = jsonEncode({
       'type': 'location',
-      'lat': lat,
-      'lng': lng,
+      'v': _locationProtocolVersion,
+      'lat': lat6,
+      'lng': lng6,
       'accuracy': accuracy,
-      'from': await myAddress(),
-      'ts': DateTime.now().toIso8601String(),
+      'from': from,
+      'ts': ts,
+      'nonce': nonce,
+      'sig': signature,
     });
     final bytes = Uint8List.fromList(utf8.encode(payload));
-    for (final address in _contactAddresses) {
+    for (final address in addresses) {
       if (_pausedAddresses.contains(address)) continue;
       try {
         final routeId = await _routeFor(address);

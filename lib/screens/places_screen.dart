@@ -7,6 +7,7 @@ import 'package:grid_frontend/services/location_manager.dart';
 import 'package:grid_frontend/services/places_service.dart';
 import 'package:grid_frontend/services/veilid_service.dart';
 import 'package:grid_frontend/styles/grid_colors.dart';
+import 'package:grid_frontend/utilities/lat_lng_validation.dart';
 import 'package:grid_frontend/widgets/grid/grid_button.dart';
 
 /// "Places" tab: saved places (who's currently there) + movement alerts,
@@ -60,7 +61,7 @@ class _PlacesScreenState extends State<PlacesScreen> {
     VeilidService.instance.contactLocations.forEach((address, loc) {
       final lat = (loc['lat'] as num?)?.toDouble();
       final lng = (loc['lng'] as num?)?.toDouble();
-      if (lat == null || lng == null) return;
+      if (lat == null || lng == null || !isFiniteLatLng(lat, lng)) return;
       final m = Geolocator.distanceBetween(
           place.latitude, place.longitude, lat, lng);
       if (m <= place.radiusMeters) result.add(address);

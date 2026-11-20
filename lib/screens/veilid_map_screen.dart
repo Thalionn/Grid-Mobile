@@ -9,6 +9,7 @@ import 'package:grid_frontend/screens/veilid_scan_screen.dart';
 import 'package:grid_frontend/services/veilid_service.dart';
 import 'package:grid_frontend/services/location_manager.dart';
 import 'package:grid_frontend/services/sharing_state_notifier.dart';
+import 'package:grid_frontend/utilities/lat_lng_validation.dart';
 import 'package:grid_frontend/widgets/contact_detail_sheet.dart';
 import 'package:grid_frontend/widgets/grid/grid_button.dart';
 import 'package:grid_frontend/widgets/grid/grid_contact_row.dart';
@@ -120,8 +121,9 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
     final contacts = VeilidService.instance.contactLocations;
     for (final entry in contacts.entries) {
       final loc = entry.value;
-      final lat = (loc['lat'] as num).toDouble();
-      final lng = (loc['lng'] as num).toDouble();
+      final lat = (loc['lat'] as num?)?.toDouble();
+      final lng = (loc['lng'] as num?)?.toDouble();
+      if (lat == null || lng == null || !isFiniteLatLng(lat, lng)) continue;
       _circles.add(await controller.addCircle(
         CircleOptions(
           geometry: LatLng(lat, lng),
@@ -148,7 +150,9 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
 
     final trails = await VeilidService.instance.loadTrails();
     for (final entry in trails.entries) {
-      final points = entry.value;
+      final points = entry.value
+          .where((p) => isFiniteLatLng(p.latitude, p.longitude))
+          .toList();
       if (points.length < 2) continue;
       final coords = points
           .map((LocationPoint p) => LatLng(p.latitude, p.longitude))

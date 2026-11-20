@@ -4,6 +4,7 @@ import 'package:grid_frontend/models/location_history.dart';
 import 'package:grid_frontend/screens/map/grid_map_style.dart';
 import 'package:grid_frontend/services/veilid_service.dart';
 import 'package:grid_frontend/styles/grid_colors.dart';
+import 'package:grid_frontend/utilities/lat_lng_validation.dart';
 
 /// A contact's recorded location history: their trail on a map plus a
 /// time-ordered timeline, modeled on Life360's "Daily History" view.
@@ -34,7 +35,9 @@ class _ContactHistoryScreenState extends State<ContactHistoryScreen> {
   }
 
   Future<void> _load() async {
-    final points = await VeilidService.instance.contactTrail(widget.address);
+    final points = (await VeilidService.instance.contactTrail(widget.address))
+        .where((p) => isFiniteLatLng(p.latitude, p.longitude))
+        .toList();
     if (!mounted) return;
     setState(() => _points = points);
     if (_styleLoaded) _drawTrail();
