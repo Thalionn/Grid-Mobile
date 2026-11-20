@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
+import 'package:grid_frontend/models/location_history.dart';
 import 'package:grid_frontend/screens/map/grid_map_style.dart';
 import 'package:grid_frontend/services/veilid_service.dart';
 import 'package:grid_frontend/services/location_manager.dart';
@@ -22,7 +23,9 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
   bool _styleLoaded = false;
 
   final List<Circle> _circles = [];
+  final List<Line> _lines = [];
   StreamSubscription<Map<String, dynamic>>? _locSub;
+  StreamSubscription<String>? _historySub;
   bool _centeredOnMe = false;
 
   @override
@@ -30,8 +33,14 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
     super.initState();
     _locSub = VeilidService.instance.locationUpdates.listen((_) {
       if (mounted) _refreshMarkers();
+      if (mounted) _refreshTrails();
     });
     LocationManager.instance.addListener(_onLocation);
+    // Refresh trails right after a point is written (avoids the read/write
+    // race and the long stationary interval between location events).
+    _historySub = VeilidService.instance.historyUpdates?.listen((_) {
+      if (mounted) _refreshTrails();
+    });
     // The tracker's stationary interval is long (up to ~15 min), so force a
     // fresh fix on open instead of waiting for the next scheduled update.
     if (LocationManager.instance.currentLatLng == null) {
@@ -43,12 +52,14 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
   void dispose() {
     LocationManager.instance.removeListener(_onLocation);
     _locSub?.cancel();
+    _historySub?.cancel();
     super.dispose();
   }
 
   void _onLocation() {
     if (!mounted) return;
     _refreshMarkers();
+    _refreshTrails();
     // Center once the first fix arrives (the camera may have started on the
     // default location before GPS delivered anything).
     if (!_centeredOnMe && LocationManager.instance.currentLatLng != null) {
@@ -97,6 +108,32 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
     }
   }
 
+  /// Draw the persisted trails (my own and each contact's) as polylines.
+  Future<void> _refreshTrails() async {
+    final controller = _controller;
+    if (controller == null || !_styleLoaded) return;
+
+    if (_lines.isNotEmpty) {
+      await controller.removeLines(List<Line>.from(_lines));
+      _lines.clear();
+    }
+
+    final trails = await VeilidService.instance.loadTrails();
+    for (final entry in trails.entries) {
+      final points = entry.value;
+      if (points.length < 2) continue;
+      final coords = points
+          .map((LocationPoint p) => LatLng(p.latitude, p.longitude))
+          .toList();
+      _lines.add(await controller.addLine(LineOptions(
+        geometry: coords,
+        lineColor: '#8b5cf6',
+        lineWidth: 3.0,
+        lineOpacity: 0.7,
+      )));
+    }
+  }
+
   Future<void> _centerOnMe() async {
     final controller = _controller;
     final me = LocationManager.instance.currentLatLng;
@@ -139,6 +176,7 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
           if (!mounted) return;
           _styleLoaded = true;
           _refreshMarkers();
+          _refreshTrails();
         },
       ),
     );

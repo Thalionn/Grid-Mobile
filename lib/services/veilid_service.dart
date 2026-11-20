@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:veilid/veilid.dart';
+import 'package:grid_frontend/models/location_history.dart';
 import 'package:grid_frontend/repositories/location_history_repository.dart';
 
 /// Veilid integration for the P2P app.
@@ -31,7 +32,8 @@ class VeilidService {
 
   static const _contactsPrefKey = 'veilid_contacts';
   static const _myRecordKeyPrefKey = 'veilid_my_record_key';
-  static const _myKeyPairPrefKey = 'veilid_my_keypair';
+  // User-secret key (Veilid protected store) for the identity keypair.
+  static const _myKeyPairSecretKey = 'grid_identity_keypair';
 
   // Device-local trail recorder, attached at boot. Optional: recording is
   // best-effort and skipped when it isn't wired up.
@@ -186,18 +188,18 @@ class VeilidService {
     }));
   }
 
-  /// Returns my identity keypair, persisted so it survives restarts.
+  /// Returns my identity keypair, persisted in Veilid's protected store so it
+  /// survives restarts (Keystore-backed on real devices).
   ///
   /// Veilid's generateKeyPair mints a *fresh random* pair each call (it does
   /// not persist), so we store it ourselves; otherwise the writer keypair would
   /// stop matching our DHT record's owner after a restart.
   Future<KeyPair> _keyPairOrCreate() async {
     if (_keyPair != null) return _keyPair!;
-    final prefs = await SharedPreferences.getInstance();
-    final saved = prefs.getString(_myKeyPairPrefKey);
+    final saved = await Veilid.instance.loadUserSecret(_myKeyPairSecretKey);
     if (saved != null && saved.isNotEmpty) {
       try {
-        _keyPair = KeyPair.fromString(saved);
+        _keyPair = KeyPair.fromString(utf8.decode(saved));
         return _keyPair!;
       } catch (_) {
         // Fall through and mint a fresh pair.
@@ -205,7 +207,10 @@ class VeilidService {
     }
     final kp = await Veilid.instance.generateKeyPair(cryptoKindVLD0);
     _keyPair = kp;
-    await prefs.setString(_myKeyPairPrefKey, kp.toString());
+    await Veilid.instance.saveUserSecret(
+      _myKeyPairSecretKey,
+      Uint8List.fromList(utf8.encode(kp.toString())),
+    );
     return kp;
   }
 
@@ -334,5 +339,21 @@ class VeilidService {
   /// locations are recorded as trails. Called once at boot.
   void attachHistoryRepo(LocationHistoryRepository repo) {
     _historyRepo = repo;
+  }
+
+  /// Emits the address of a trail that just gained a point, after the write,
+  /// so the map can refresh polylines promptly. Null when no repo is attached.
+  Stream<String>? get historyUpdates => _historyRepo?.historyUpdates;
+
+  /// Load the recorded trails (location points) for my own address and every
+  /// contact, keyed by address. Empty when the history repo isn't wired up.
+  Future<Map<String, List<LocationPoint>>> loadTrails() async {
+    final repo = _historyRepo;
+    if (repo == null) return {};
+    final addresses = [..._contactAddresses];
+    final mine = await myAddress();
+    if (!addresses.contains(mine)) addresses.add(mine);
+    final histories = await repo.getLocationHistoriesForAddresses(addresses);
+    return histories.map((address, h) => MapEntry(address, h.points));
   }
 }
