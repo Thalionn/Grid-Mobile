@@ -21,7 +21,9 @@ import '../sharing_state_notifier.dart';
 /// `start()` is idempotent. Call `syncFromPrefs()` whenever the user
 /// changes home location / radius / the master toggle.
 class HomeGeofenceService {
-  HomeGeofenceService(this._sharingState);
+  HomeGeofenceService._(this._sharingState);
+  static final HomeGeofenceService instance =
+      HomeGeofenceService._(SharingStateNotifier.instance);
 
   final SharingStateNotifier _sharingState;
 

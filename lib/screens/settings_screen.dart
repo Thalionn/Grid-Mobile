@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:grid_frontend/services/location/home_geofence_service.dart';
 import 'package:grid_frontend/services/location_manager.dart';
 import 'package:grid_frontend/services/sharing_state_notifier.dart';
 import 'package:grid_frontend/services/theme_controller.dart';
@@ -69,6 +70,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         'home_location', '${me.latitude},${me.longitude}');
     await prefs.setDouble('home_radius', _homeRadius);
     await _loadHome();
+    await HomeGeofenceService.instance.syncFromPrefs();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Home location set to your current position')),
@@ -81,6 +83,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await prefs.remove('home_location');
     await prefs.remove('home_radius');
     await _loadHome();
+    await HomeGeofenceService.instance.syncFromPrefs();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Home location cleared')),
@@ -140,6 +143,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onChanged: (v) {
               setState(() => _autoPauseAtHome = v);
               _setPref('auto_pause_at_home_enabled', v);
+              HomeGeofenceService.instance.syncFromPrefs();
             },
           ),
 

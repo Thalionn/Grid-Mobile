@@ -10,6 +10,7 @@ import 'package:grid_frontend/services/location_manager.dart';
 import 'package:grid_frontend/services/sharing_state_notifier.dart';
 import 'package:grid_frontend/services/veilid_service.dart';
 import 'package:grid_frontend/services/database_service.dart';
+import 'package:grid_frontend/services/location/home_geofence_service.dart';
 import 'package:grid_frontend/repositories/location_history_repository.dart';
 import 'package:grid_frontend/screens/home_screen.dart';
 
@@ -28,6 +29,8 @@ Future<void> _initLocation() async {
   try {
     await LocationManager.instance.initialize();
     await LocationManager.instance.startTracking();
+    // Start the home geofence once tracking is up (auto-pause at home).
+    await HomeGeofenceService.instance.start();
   } catch (e) {
     debugPrint('[Location] init failed (non-fatal): $e');
   }
