@@ -9,6 +9,7 @@ import 'package:grid_frontend/services/veilid_service.dart';
 import 'package:grid_frontend/styles/grid_colors.dart';
 import 'package:grid_frontend/utilities/lat_lng_validation.dart';
 import 'package:grid_frontend/widgets/grid/grid_button.dart';
+import 'package:grid_frontend/widgets/grid/place_search_sheet.dart';
 
 /// "Places" tab: saved places (who's currently there) + movement alerts,
 /// modeled on Life360.
@@ -69,17 +70,23 @@ class _PlacesScreenState extends State<PlacesScreen> {
     return result;
   }
 
-  Future<void> _addPlace() async {
-    final me = LocationManager.instance.currentLatLng;
-    if (me == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No location fix yet — move a little and retry.')),
-        );
-      }
-      return;
-    }
-    final controller = TextEditingController();
+  /// Add a place: search an address/place, or use the current position, then
+  /// name it and pick a radius.
+  Future<void> _openAddPlace() async {
+    final selection = await showModalBottomSheet<PlaceSelection>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => PlaceSearchSheet(
+        myLocation: LocationManager.instance.currentLatLng,
+      ),
+    );
+    if (selection == null || !mounted) return;
+    await _confirmPlace(selection);
+  }
+
+  Future<void> _confirmPlace(PlaceSelection selection) async {
+    final controller = TextEditingController(text: selection.suggestedName ?? '');
     double radius = 150;
     final result = await showDialog<(String, double)>(
       context: context,
@@ -136,8 +143,8 @@ class _PlacesScreenState extends State<PlacesScreen> {
     await PlacesService.instance.add(Place(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
       name: name.trim(),
-      latitude: me.latitude,
-      longitude: me.longitude,
+      latitude: selection.latitude,
+      longitude: selection.longitude,
       radiusMeters: r,
     ));
     if (mounted) setState(() {});
@@ -163,7 +170,7 @@ class _PlacesScreenState extends State<PlacesScreen> {
           if (places.isEmpty)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-              child: Text('No places yet — add Home, Work, or anywhere.',
+              child: Text('No places yet — search an address, or use your current location.',
                   style: TextStyle(color: c.text3, fontSize: 13)),
             )
           else
@@ -171,10 +178,10 @@ class _PlacesScreenState extends State<PlacesScreen> {
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
             child: GridButton(
-              label: 'Add place at my location',
+              label: 'Add a place',
               icon: Icons.add_location_alt_outlined,
               style: GridButtonStyle.secondary,
-              onPressed: _addPlace,
+              onPressed: _openAddPlace,
             ),
           ),
           const SizedBox(height: 16),
