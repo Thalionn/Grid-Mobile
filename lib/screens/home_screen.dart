@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:grid_frontend/screens/contacts_screen.dart';
+import 'package:grid_frontend/screens/places_screen.dart';
 import 'package:grid_frontend/screens/settings_screen.dart';
 import 'package:grid_frontend/screens/veilid_map_screen.dart';
 
-/// Main app shell: Map, Contacts, and Settings tabs over the P2P backend.
+/// Main app shell: Map, Contacts, Places, and Settings tabs over the P2P backend.
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -17,6 +18,7 @@ class _HomeScreenState extends State<HomeScreen> {
   static const _tabs = [
     VeilidMapScreen(),
     ContactsScreen(),
+    PlacesScreen(),
     SettingsScreen(),
   ];
 
@@ -37,6 +39,11 @@ class _HomeScreenState extends State<HomeScreen> {
             icon: Icon(Icons.people_outline),
             selectedIcon: Icon(Icons.people),
             label: 'Contacts',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.place_outlined),
+            selectedIcon: Icon(Icons.place),
+            label: 'Places',
           ),
           NavigationDestination(
             icon: Icon(Icons.settings_outlined),

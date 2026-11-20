@@ -3,9 +3,11 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:veilid/veilid.dart';
 import 'package:grid_frontend/models/location_history.dart';
+import 'package:grid_frontend/models/place.dart';
 import 'package:grid_frontend/repositories/location_history_repository.dart';
 
 /// Veilid integration for the P2P app.
@@ -58,6 +60,30 @@ class VeilidService {
   // Latest location per contact, keyed by the receiving route id (the route
   // this node created and shared). In-memory for the spike.
   final Map<String, Map<String, dynamic>> _contactLocations = {};
+
+  // Movement tracking: last known moving state per contact address, and the
+  // recent "started moving / stopped" alerts (in-memory, newest first).
+  final Map<String, bool> _contactMoving = {};
+  final Map<String, int> _contactMovingStreak = {};
+  final List<MovementAlert> _recentAlerts = [];
+
+  // Life360-ish hysteresis: ~2 m/s (7 km/h) to start, 0.8 m/s to stop, with an
+  // instant trigger when the sample is clearly driving speed. Requiring two
+  // consecutive samples is what keeps GPS jitter from flapping the state.
+  static const double _moveEnterMps = 2.0;
+  static const double _moveExitMps = 0.8;
+  static const double _moveInstantMps = 5.0;
+  static const int _startSamples = 2;
+  static const int _stopSamples = 2;
+
+  final StreamController<MovementAlert> _alertController =
+      StreamController<MovementAlert>.broadcast();
+
+  /// Movement transition alerts ("started moving" / "stopped") for contacts.
+  Stream<MovementAlert> get movementAlerts => _alertController.stream;
+
+  /// Recent movement alerts, newest first.
+  List<MovementAlert> get recentAlerts => List.unmodifiable(_recentAlerts);
 
   final StreamController<Map<String, dynamic>> _locationController =
       StreamController<Map<String, dynamic>>.broadcast();
@@ -196,6 +222,8 @@ class VeilidService {
         final lat = (payload['lat'] as num).toDouble();
         final lng = (payload['lng'] as num).toDouble();
         final from = payload['from'] as String?;
+        final now = DateTime.now();
+        final prev = from != null ? _contactLocations[from] : null;
         final loc = {
           'lat': lat,
           'lng': lng,
@@ -203,11 +231,15 @@ class VeilidService {
           'from': from,
           'routeId': update.routeId,
           'sender': update.sender?.toString(),
-          'ts': DateTime.now(),
+          'ts': now,
         };
         _locationController.add(loc);
         final key = from ?? update.routeId ?? update.sender?.toString() ?? 'unknown';
         _contactLocations[key] = loc;
+        // Detect movement transitions ("started moving" / "stopped").
+        if (from != null && prev != null) {
+          _detectMovement(from, prev, lat, lng, now);
+        }
         // Record the sender's trail to device-local history (best-effort).
         if (from != null) _recordHistory(from, lat, lng);
       }
@@ -223,6 +255,55 @@ class VeilidService {
     unawaited(repo.addLocationPoint(address, lat, lng).catchError((Object e) {
       debugPrint('[Veilid] history record failed for $address: $e');
     }));
+  }
+
+  /// Compare a new fix to the previous one and emit a movement alert on a
+  /// moving <-> stationary transition.
+  ///
+  /// Raw per-fix speed is noisy (GPS jitter, a single big jump), so transitions
+  /// are debounced: two consecutive samples are needed to declare movement
+  /// (or one clearly-driving-speed sample), two to declare a stop, and each
+  /// contact gets a cooldown between alerts.
+  void _detectMovement(String address, Map<String, dynamic> prev, double lat,
+      double lng, DateTime now) {
+    final prevLat = (prev['lat'] as num?)?.toDouble();
+    final prevLng = (prev['lng'] as num?)?.toDouble();
+    final prevTs = prev['ts'];
+    if (prevLat == null || prevLng == null || prevTs is! DateTime) return;
+    final dt = now.difference(prevTs).inSeconds;
+    if (dt <= 0) return;
+    // A long gap (app asleep, reboot) says nothing about continuous movement.
+    if (dt > 300) {
+      _contactMovingStreak[address] = 0;
+      return;
+    }
+    final meters = Geolocator.distanceBetween(prevLat, prevLng, lat, lng);
+    final speed = meters / dt;
+    final wasMoving = _contactMoving[address] ?? false;
+
+    // Hysteresis: harder to start than to keep going.
+    final threshold = wasMoving ? _moveExitMps : _moveEnterMps;
+    final saysMoving = speed >= threshold;
+    if (saysMoving == wasMoving) {
+      _contactMovingStreak[address] = 0;
+      return;
+    }
+
+    final streak = (_contactMovingStreak[address] ?? 0) + 1;
+    _contactMovingStreak[address] = streak;
+    final needed = wasMoving ? _stopSamples : _startSamples;
+    final instantStart = !wasMoving && speed >= _moveInstantMps;
+    if (!instantStart && streak < needed) return;
+
+    _contactMovingStreak[address] = 0;
+    _contactMoving[address] = !wasMoving;
+    _recordMovementAlert(address, now, !wasMoving);
+  }
+
+  void _recordMovementAlert(String address, DateTime at, bool moving) {
+    _recentAlerts.insert(0, MovementAlert(address: address, at: at, moving: moving));
+    if (_recentAlerts.length > 50) _recentAlerts.removeLast();
+    _alertController.add(_recentAlerts.first);
   }
 
   /// Returns my identity keypair, persisted in Veilid's protected store so it
