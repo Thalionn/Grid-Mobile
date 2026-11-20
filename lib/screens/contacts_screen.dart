@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:qr_flutter/qr_flutter.dart';
 import 'package:grid_frontend/services/veilid_service.dart';
 import 'package:grid_frontend/screens/veilid_scan_screen.dart';
 import 'package:grid_frontend/widgets/grid/grid_avatar.dart';
@@ -10,6 +9,7 @@ import 'package:grid_frontend/widgets/grid/grid_button.dart';
 import 'package:grid_frontend/widgets/grid/grid_contact_row.dart';
 import 'package:grid_frontend/widgets/grid/grid_mono.dart';
 import 'package:grid_frontend/widgets/grid/grid_status_pill.dart';
+import 'package:grid_frontend/widgets/grid/grid_address_qr.dart';
 import 'package:grid_frontend/widgets/contact_detail_sheet.dart';
 
 /// Contacts tab: my shareable address (QR) plus the list of linked contacts.
@@ -104,7 +104,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
             child: Column(
               children: [
                 if (_address != null)
-                  QrImageView(data: _address!, size: 160)
+                  GridAddressQr(data: _address!, size: 160)
                 else
                   const Padding(
                     padding: EdgeInsets.all(32),

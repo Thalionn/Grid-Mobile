@@ -522,4 +522,12 @@ class VeilidService {
     final histories = await repo.getLocationHistoriesForAddresses(addresses);
     return histories.map((address, h) => MapEntry(address, h.points));
   }
+
+  /// The recorded location trail for a single [address] (newest last).
+  Future<List<LocationPoint>> contactTrail(String address) async {
+    final repo = _historyRepo;
+    if (repo == null) return const [];
+    final history = await repo.getLocationHistory(address);
+    return history?.points ?? const [];
+  }
 }

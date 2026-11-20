@@ -221,8 +221,21 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => const _MapContactSheet(),
+      builder: (_) => _MapContactSheet(onJumpTo: _jumpToContact),
     ).then((_) => setState(() {}));
+  }
+
+  /// Center the camera on a contact's latest location.
+  Future<void> _jumpToContact(String address) async {
+    final controller = _controller;
+    final loc = VeilidService.instance.contactLocations[address];
+    if (controller == null || loc == null) return;
+    final lat = (loc['lat'] as num?)?.toDouble();
+    final lng = (loc['lng'] as num?)?.toDouble();
+    if (lat == null || lng == null) return;
+    await controller.moveCamera(CameraUpdate.newCameraPosition(
+      CameraPosition(target: LatLng(lat, lng), zoom: 15),
+    ));
   }
 
   Future<void> _sendLocation() async {
@@ -374,9 +387,12 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
   }
 }
 
-/// Slide-up contact sheet over the map: list + add.
+/// Slide-up contact sheet over the map: list + add. Tapping a contact jumps
+/// the map camera to their latest location.
 class _MapContactSheet extends StatefulWidget {
-  const _MapContactSheet();
+  const _MapContactSheet({required this.onJumpTo});
+
+  final void Function(String address) onJumpTo;
 
   @override
   State<_MapContactSheet> createState() => _MapContactSheetState();
@@ -443,12 +459,7 @@ class _MapContactSheetState extends State<_MapContactSheet> {
                       : GridStatusKind.live,
                   onTap: () {
                     Navigator.of(context).pop();
-                    showModalBottomSheet(
-                      context: context,
-                      isScrollControlled: true,
-                      backgroundColor: Colors.transparent,
-                      builder: (_) => ContactDetailSheet(address: address),
-                    );
+                    widget.onJumpTo(address);
                   },
                 ),
           ],

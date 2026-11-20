@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:grid_frontend/screens/contact_history_screen.dart';
 import 'package:grid_frontend/services/location_manager.dart';
 import 'package:grid_frontend/services/veilid_service.dart';
 import 'package:grid_frontend/utilities/time_ago_formatter.dart';
@@ -122,7 +123,21 @@ class _ContactDetailSheetState extends State<ContactDetailSheet> {
                 _infoTile(context, 'Distance', distance ?? '—'),
               ],
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 4),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.timeline),
+              title: const Text('View location history'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () {
+                final nav = Navigator.of(context);
+                nav.pop();
+                nav.push(MaterialPageRoute(
+                  builder: (_) => ContactHistoryScreen(address: widget.address),
+                ));
+              },
+            ),
+            const SizedBox(height: 8),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('Share my location'),
