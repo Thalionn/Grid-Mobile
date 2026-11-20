@@ -83,15 +83,33 @@ class _ContactHistoryScreenState extends State<ContactHistoryScreen> {
         lineJoin: 'round',
       )));
     }
-    for (var i = 0; i < coords.length; i++) {
-      final isLast = i == coords.length - 1;
+    // Only mark the two ends. One native circle per history point would mean
+    // thousands of awaited platform calls on a long trail.
+    if (coords.length == 1) {
       _circles.add(await controller.addCircle(CircleOptions(
-        geometry: coords[i],
-        circleRadius: isLast ? 8.0 : 5.0,
-        circleColor: isLast ? '#00DBA4' : '#ffffff',
+        geometry: coords.first,
+        circleRadius: 8.0,
+        circleColor: '#00DBA4',
         circleOpacity: 1.0,
         circleStrokeWidth: 2.0,
-        circleStrokeColor: isLast ? '#ffffff' : '#00DBA4',
+        circleStrokeColor: '#ffffff',
+      )));
+    } else {
+      _circles.add(await controller.addCircle(CircleOptions(
+        geometry: coords.first,
+        circleRadius: 5.0,
+        circleColor: '#ffffff',
+        circleOpacity: 1.0,
+        circleStrokeWidth: 2.0,
+        circleStrokeColor: '#00DBA4',
+      )));
+      _circles.add(await controller.addCircle(CircleOptions(
+        geometry: coords.last,
+        circleRadius: 8.0,
+        circleColor: '#00DBA4',
+        circleOpacity: 1.0,
+        circleStrokeWidth: 2.0,
+        circleStrokeColor: '#ffffff',
       )));
     }
 

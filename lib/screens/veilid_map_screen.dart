@@ -13,7 +13,6 @@ import 'package:grid_frontend/utilities/lat_lng_validation.dart';
 import 'package:grid_frontend/widgets/contact_detail_sheet.dart';
 import 'package:grid_frontend/widgets/grid/grid_button.dart';
 import 'package:grid_frontend/widgets/grid/grid_contact_row.dart';
-import 'package:grid_frontend/widgets/grid/grid_mono.dart';
 import 'package:grid_frontend/widgets/grid/grid_sheet.dart';
 import 'package:grid_frontend/widgets/grid/grid_status_pill.dart';
 
@@ -33,21 +32,32 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
   bool? _isDark;
   bool _styleLoaded = false;
 
-  final List<Circle> _circles = [];
   final List<Circle> _homeCircles = [];
-  final List<Line> _lines = [];
+  Circle? _meCircle;
+  final Map<String, Circle> _contactCircles = {};
+  final Map<String, Line> _trailLines = {};
   StreamSubscription<Map<String, dynamic>>? _locSub;
   StreamSubscription<String>? _historySub;
   StreamSubscription<void>? _contactsSub;
   bool _centeredOnMe = false;
   bool _sending = false;
 
+  // Trails are rebuilt at most once per this window. A single own fix used to
+  // trigger two full rebuilds (location stream + history stream); this
+  // coalesces them and keeps a 6000-point polyline from being re-tessellated
+  // on every message.
+  Timer? _trailDebounce;
+  bool _trailRefreshRunning = false;
+  bool _trailRefreshQueued = false;
+  bool _markerRefreshRunning = false;
+  bool _markerRefreshQueued = false;
+
   @override
   void initState() {
     super.initState();
     _locSub = VeilidService.instance.locationUpdates.listen((_) {
       if (mounted) _refreshMarkers();
-      if (mounted) _refreshTrails();
+      if (mounted) _scheduleTrailRefresh();
     });
     LocationManager.instance.addListener(_onLocation);
     SharingStateNotifier.instance.addListener(_onSharingChanged);
@@ -55,12 +65,13 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
       if (mounted) {
         setState(() {});
         _refreshMarkers();
+        _scheduleTrailRefresh();
       }
     });
-    // Refresh trails right after a point is written (avoids the read/write
+    // Refresh trails shortly after a point is written (avoids the read/write
     // race and the long stationary interval between location events).
     _historySub = VeilidService.instance.historyUpdates?.listen((_) {
-      if (mounted) _refreshTrails();
+      if (mounted) _scheduleTrailRefresh();
     });
     // The tracker's stationary interval is long (up to ~15 min), so force a
     // fresh fix on open instead of waiting for the next scheduled update.
@@ -73,6 +84,7 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
   void dispose() {
     LocationManager.instance.removeListener(_onLocation);
     SharingStateNotifier.instance.removeListener(_onSharingChanged);
+    _trailDebounce?.cancel();
     _locSub?.cancel();
     _historySub?.cancel();
     _contactsSub?.cancel();
@@ -82,7 +94,7 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
   void _onLocation() {
     if (!mounted) return;
     _refreshMarkers();
-    _refreshTrails();
+    _scheduleTrailRefresh();
     // Center once the first fix arrives (the camera may have started on the
     // default location before GPS delivered anything).
     if (!_centeredOnMe && LocationManager.instance.currentLatLng != null) {
@@ -96,73 +108,135 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
   }
 
   Future<void> _refreshMarkers() async {
+    // Two streams (own fixes + received fixes) can fire together; serialize so
+    // neither run sees a half-updated handle map.
+    if (_markerRefreshRunning) {
+      _markerRefreshQueued = true;
+      return;
+    }
     final controller = _controller;
     if (controller == null || !_styleLoaded) return;
-
-    if (_circles.isNotEmpty) {
-      await controller.removeCircles(List<Circle>.from(_circles));
-      _circles.clear();
+    _markerRefreshRunning = true;
+    try {
+      await _refreshMarkersNow(controller);
+    } finally {
+      _markerRefreshRunning = false;
+      if (_markerRefreshQueued) {
+        _markerRefreshQueued = false;
+        // Ignore the result: this is a coalesced follow-up.
+        _refreshMarkers();
+      }
     }
+  }
 
-    // Your position (blue).
+  Future<void> _refreshMarkersNow(MapLibreMapController controller) async {
+
+    // Your position (blue). Updated in place instead of removed and re-added.
     final me = LocationManager.instance.currentLatLng;
     if (me != null) {
-      _circles.add(await controller.addCircle(CircleOptions(
+      final options = CircleOptions(
         geometry: LatLng(me.latitude, me.longitude),
         circleRadius: 7.0,
         circleColor: '#2563eb',
         circleOpacity: 1.0,
         circleStrokeWidth: 2.0,
         circleStrokeColor: '#ffffff',
-      )));
+      );
+      if (_meCircle == null) {
+        _meCircle = await controller.addCircle(options);
+      } else {
+        await controller.updateCircle(_meCircle!, options);
+      }
+    } else if (_meCircle != null) {
+      await controller.removeCircle(_meCircle!);
+      _meCircle = null;
     }
 
     // Contact positions (amber), tagged with their address for tap handling.
     final contacts = VeilidService.instance.contactLocations;
+    final seen = <String>{};
     for (final entry in contacts.entries) {
       final loc = entry.value;
       final lat = (loc['lat'] as num?)?.toDouble();
       final lng = (loc['lng'] as num?)?.toDouble();
       if (lat == null || lng == null || !isFiniteLatLng(lat, lng)) continue;
-      _circles.add(await controller.addCircle(
-        CircleOptions(
-          geometry: LatLng(lat, lng),
-          circleRadius: 7.0,
-          circleColor: '#f59e0b',
-          circleOpacity: 1.0,
-          circleStrokeWidth: 2.0,
-          circleStrokeColor: '#ffffff',
-        ),
-        {'address': entry.key},
-      ));
+      seen.add(entry.key);
+      final options = CircleOptions(
+        geometry: LatLng(lat, lng),
+        circleRadius: 7.0,
+        circleColor: '#f59e0b',
+        circleOpacity: 1.0,
+        circleStrokeWidth: 2.0,
+        circleStrokeColor: '#ffffff',
+      );
+      final existing = _contactCircles[entry.key];
+      if (existing == null) {
+        _contactCircles[entry.key] =
+            await controller.addCircle(options, {'address': entry.key});
+      } else {
+        await controller.updateCircle(existing, options);
+      }
+    }
+    // Drop markers for contacts that were removed.
+    for (final address in _contactCircles.keys.toList()) {
+      if (seen.contains(address)) continue;
+      await controller.removeCircle(_contactCircles.remove(address)!);
     }
   }
 
-  /// Draw the persisted trails (my own and each contact's) as polylines.
+  /// Ensure the trail layer is refreshed soon (coalesced), rather than on
+  /// every location/history event.
+  void _scheduleTrailRefresh() {
+    if (!mounted) return;
+    _trailDebounce?.cancel();
+    _trailDebounce = Timer(const Duration(milliseconds: 1500), _refreshTrails);
+  }
+
+  /// Draw the persisted trails (my own and each contact's) as polylines,
+  /// updating existing lines in place instead of tearing the layer down.
   Future<void> _refreshTrails() async {
+    if (_trailRefreshRunning) {
+      _trailRefreshQueued = true;
+      return;
+    }
     final controller = _controller;
     if (controller == null || !_styleLoaded) return;
-
-    if (_lines.isNotEmpty) {
-      await controller.removeLines(List<Line>.from(_lines));
-      _lines.clear();
-    }
-
-    final trails = await VeilidService.instance.loadTrails();
-    for (final entry in trails.entries) {
-      final points = entry.value
-          .where((p) => isFiniteLatLng(p.latitude, p.longitude))
-          .toList();
-      if (points.length < 2) continue;
-      final coords = points
-          .map((LocationPoint p) => LatLng(p.latitude, p.longitude))
-          .toList();
-      _lines.add(await controller.addLine(LineOptions(
-        geometry: coords,
-        lineColor: '#8b5cf6',
-        lineWidth: 3.0,
-        lineOpacity: 0.7,
-      )));
+    _trailRefreshRunning = true;
+    try {
+      final trails = await VeilidService.instance.loadTrails();
+      final seen = <String>{};
+      for (final entry in trails.entries) {
+        final points = entry.value
+            .where((p) => isFiniteLatLng(p.latitude, p.longitude))
+            .toList();
+        if (points.length < 2) continue;
+        seen.add(entry.key);
+        final coords = points
+            .map((LocationPoint p) => LatLng(p.latitude, p.longitude))
+            .toList();
+        final options = LineOptions(
+          geometry: coords,
+          lineColor: '#8b5cf6',
+          lineWidth: 3.0,
+          lineOpacity: 0.7,
+        );
+        final existing = _trailLines[entry.key];
+        if (existing == null) {
+          _trailLines[entry.key] = await controller.addLine(options);
+        } else {
+          await controller.updateLine(existing, options);
+        }
+      }
+      for (final address in _trailLines.keys.toList()) {
+        if (seen.contains(address)) continue;
+        await controller.removeLine(_trailLines.remove(address)!);
+      }
+    } finally {
+      _trailRefreshRunning = false;
+      if (_trailRefreshQueued) {
+        _trailRefreshQueued = false;
+        _scheduleTrailRefresh();
+      }
     }
   }
 
@@ -374,6 +448,10 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
             onStyleLoadedCallback: () {
               if (!mounted) return;
               _styleLoaded = true;
+              // A style reload invalidates every annotation handle.
+              _meCircle = null;
+              _contactCircles.clear();
+              _trailLines.clear();
               _refreshMarkers();
               _refreshTrails();
               _refreshHome();

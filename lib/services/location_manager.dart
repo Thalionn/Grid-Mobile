@@ -7,6 +7,7 @@ import 'location/location_update.dart';
 import 'location/location_service_config.dart';
 import 'location/libre_location_service.dart';
 import 'location/location_dispatch.dart';
+import 'sharing_state_notifier.dart';
 
 /// A simpler location manager relying on the plugin's own stop-detection.
 /// Battery Saver Mode slightly changes the config, otherwise we let
@@ -37,7 +38,15 @@ class LocationManager with ChangeNotifier {
   Future<void> initialize() async {
     await _loadTrackingMode();
     _initializeLifecycleListener();
+    // Pausing (incognito or the home geofence) must also relax the GPS
+    // hardware, not just suppress sending.
+    SharingStateNotifier.instance.addListener(_onSharingStateChanged);
     _setupLocationService();
+  }
+
+  void _onSharingStateChanged() {
+    _updateTrackingConfig();
+    notifyListeners();
   }
 
   // Listen for app foreground/background changes
@@ -96,7 +105,7 @@ class LocationManager with ChangeNotifier {
         final timeSinceLastUpdate = now.difference(_lastLocationUpdate!);
 
         // Reduced throttling intervals for more frequent updates
-        final throttleInterval = _trackingMode == TrackingMode.batterySaver
+        final throttleInterval = effectiveTrackingMode == TrackingMode.batterySaver
             ? const Duration(minutes: 3) // Reduced from 5 to 3 minutes
             : const Duration(seconds: 30); // Reduced from 1 minute to 30 seconds
 
@@ -120,16 +129,26 @@ class LocationManager with ChangeNotifier {
     });
   }
 
-  // Apply the appropriate config based on battery-saver mode
+  /// The tracker tier actually in use. While sharing is paused there is no
+  /// reason to run high-accuracy location, so drop to the battery-saving
+  /// preset; restoring sharing restores the user's chosen tier.
+  TrackingMode get effectiveTrackingMode =>
+      SharingStateNotifier.instance.isPaused
+          ? TrackingMode.batterySaver
+          : _trackingMode;
+
+  // Apply the appropriate config based on the sharing state.
   void _updateTrackingConfig() {
     if (!_isTracking) return;
 
     final config = LocationServiceConfig(
-      mode: _trackingMode,
-      enableHeadless: true,
-      startOnBoot: true,
+      mode: effectiveTrackingMode,
+      // The P2P app shares while running; a boot/headless restart would keep
+      // the GPS hot without a UI to pause it.
+      enableHeadless: false,
+      startOnBoot: false,
     );
-    
+
     _locationService.setConfig(config);
   }
 
@@ -144,6 +163,7 @@ class LocationManager with ChangeNotifier {
 
   bool get isTracking => _isTracking;
   TrackingMode get trackingMode => _trackingMode;
+  bool get isInForeground => _isInForeground;
   bool get isMoving => _isMoving;
   DateTime? get lastLocationUpdate => _lastLocationUpdate;
   

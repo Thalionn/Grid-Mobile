@@ -7,6 +7,7 @@ import 'package:grid_frontend/styles/tokens.dart';
 import 'package:grid_frontend/styles/grid_colors.dart';
 import 'package:grid_frontend/services/theme_controller.dart';
 import 'package:grid_frontend/services/location_manager.dart';
+import 'package:grid_frontend/services/location/location_dispatch.dart';
 import 'package:grid_frontend/services/sharing_state_notifier.dart';
 import 'package:grid_frontend/services/veilid_service.dart';
 import 'package:grid_frontend/services/database_service.dart';
@@ -50,22 +51,21 @@ void _initHistory() {
   });
 }
 
-/// Continuously share my location: on each fix (motion) and periodically
-/// (stationary), push to every non-paused contact unless sharing is paused.
+/// Continuously share my location through the dispatch policy.
+///
+/// [LocationDispatch] decides which fixes are worth sending based on activity,
+/// movement, speed and the user's sharing mode, and it is the single place
+/// that honours incognito/auto-pause. Sending every raw fix (plus a 30-second
+/// timer re-sending an unchanged position) burned radio wakeups for no new
+/// information.
 void _initSharing() {
+  final dispatch = LocationDispatch(SharingStateNotifier.instance);
+  unawaited(dispatch.start());
+
   LocationManager.instance.locationStream.listen((update) {
-    if (SharingStateNotifier.instance.isPaused) return;
+    if (!dispatch.shouldPost(update)) return;
     VeilidService.instance.sendLocation(update.latitude, update.longitude,
         accuracy: update.accuracy);
-  });
-
-  // The balanced tracking preset only emits a fix every ~15 min when
-  // stationary, so also share on a fixed cadence.
-  Timer.periodic(const Duration(seconds: 30), (_) {
-    if (SharingStateNotifier.instance.isPaused) return;
-    final pos = LocationManager.instance.currentLatLng;
-    if (pos == null) return;
-    VeilidService.instance.sendLocation(pos.latitude, pos.longitude);
   });
 }
 

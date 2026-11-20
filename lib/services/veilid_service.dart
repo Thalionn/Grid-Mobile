@@ -24,10 +24,10 @@ class VeilidService {
   static final VeilidService instance = VeilidService._();
 
   bool _started = false;
+  bool _identityStoreInsecure = false;
   KeyPair? _keyPair;
   RecordKey? _myRecordKey;
   VeilidRoutingContext? _routingContext;
-  StreamSubscription<VeilidUpdate>? _updateSub;
 
   // Stable contact addresses (DHT record key strings), persisted. The live
   // route for each contact is looked up from their DHT record on demand.
@@ -125,6 +125,10 @@ class VeilidService {
   Map<String, Map<String, dynamic>> get contactLocations =>
       Map.unmodifiable(_contactLocations);
 
+  /// True when the node had to fall back to an unencrypted, disk-based
+  /// protected store, so the identity private key is not hardware-protected.
+  bool get identityStoreInsecure => _identityStoreInsecure;
+
   Future<void>? _starting;
 
   /// Starts Veilid exactly once, even when called concurrently (the identity
@@ -153,18 +157,30 @@ class VeilidService {
       isWeb: kIsWeb,
       programName: 'Grid',
     );
-    // The Android Keystore-backed secure store can be unavailable (locked or
-    // unsupported), and the default config refuses to fall back. Allow the
-    // disk-based fallback so the node can still boot.
-    final patched = config.copyWith(
-      protectedStore: config.protectedStore.copyWith(
-        allowInsecureFallback: true,
-      ),
-    );
 
-    final updates = await Veilid.instance.startupVeilidCore(patched);
+    // Prefer a hardware-backed protected store (Keystore). Only when this
+    // device cannot provide one do we fall back to Veilid's disk-based store,
+    // and we remember that so Settings can warn that the identity key is not
+    // hardware-protected. Failing closed silently would just mean the app
+    // never starts on such devices, which is worse than an explicit warning.
+    Stream<VeilidUpdate> updates;
+    try {
+      updates = await Veilid.instance.startupVeilidCore(config);
+    } catch (e) {
+      debugPrint(
+          '[Veilid] protected store unavailable, using insecure fallback: $e');
+      _identityStoreInsecure = true;
+      final patched = config.copyWith(
+        protectedStore: config.protectedStore.copyWith(
+          allowInsecureFallback: true,
+        ),
+      );
+      updates = await Veilid.instance.startupVeilidCore(patched);
+    }
+
     _routingContext = await Veilid.instance.routingContext();
-    _updateSub = updates.listen(_handleUpdate);
+    // Keep the update stream subscribed for the process lifetime.
+    updates.listen(_handleUpdate);
     await Veilid.instance.attach();
 
     _started = true;
@@ -226,6 +242,20 @@ class VeilidService {
   Future<void> _persistContacts() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setStringList(_contactsPrefKey, _contactAddresses);
+  }
+
+  Future<void> _persistPaused() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_pausedPrefKey, _pausedAddresses.toList());
+  }
+
+  Future<void> _persistContactKeys() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (_contactPublicKeys.isEmpty) {
+      await prefs.remove(_contactKeysPrefKey);
+    } else {
+      await prefs.setString(_contactKeysPrefKey, jsonEncode(_contactPublicKeys));
+    }
   }
 
   void _handleUpdate(VeilidUpdate update) {
@@ -497,9 +527,11 @@ class VeilidService {
     try {
       final context = _routingContext;
       if (context == null) return null;
-      final desc = await context.openDHTRecord(RecordKey.fromString(address));
-      await _pinContactKey(address, desc.owner);
-      return desc.owner;
+      final recordKey = RecordKey.fromString(address);
+      final desc = await context.openDHTRecord(recordKey);
+      final owner = desc.owner;
+      await _pinContactKey(address, owner);
+      return owner;
     } catch (e) {
       debugPrint('[Veilid] identity key lookup failed for $address: $e');
       return null;
@@ -510,8 +542,7 @@ class VeilidService {
     final value = owner.toString();
     if (_contactPublicKeys[address] == value) return;
     _contactPublicKeys[address] = value;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_contactKeysPrefKey, jsonEncode(_contactPublicKeys));
+    await _persistContactKeys();
   }
 
   String _newNonce() {
@@ -760,7 +791,9 @@ class VeilidService {
     if (value == null || value.data.isEmpty) {
       throw StateError('Contact has no published route');
     }
-    return Veilid.instance.importRemotePrivateRoute(value.data);
+    // Re-opening a record is in-place, so the handle is reused rather than
+    // leaked. It is released when the contact is removed.
+    return await Veilid.instance.importRemotePrivateRoute(value.data);
   }
 
   /// Add a contact by their stable address (a DHT record key string). Their
@@ -886,9 +919,107 @@ class VeilidService {
     } else {
       _pausedAddresses.remove(address);
     }
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(_pausedPrefKey, _pausedAddresses.toList());
+    await _persistPaused();
     _contactsChangedController.add(null);
+  }
+
+  /// Unlink a contact: stop sharing with them, forget their identity and
+  /// published name, release the imported route, close their DHT handle, and
+  /// delete their stored trail. After this, messages from them are rejected by
+  /// the allowlist, and we no longer hold a working route to them.
+  Future<void> removeContact(String address) async {
+    final route = _contactRoutes.remove(address);
+    _contactRouteResolvedAt.remove(address);
+    _contactAddresses.remove(address);
+    _pausedAddresses.remove(address);
+    _contactNames.remove(address);
+    _contactPublicKeys.remove(address);
+    _contactLocations.remove(address);
+    _contactMoving.remove(address);
+    _contactMovingStreak.remove(address);
+    _lastAcceptedAt.remove(address);
+    _keyLookupAttemptedAt.remove(address);
+
+    await _persistContacts();
+    await _persistPaused();
+    await _persistContactNames();
+    await _persistContactKeys();
+    await _historyRepo?.deleteAddressHistory(address);
+
+    // Drop the imported route so the capability dies with the contact, and
+    // release the DHT record handle we were holding open.
+    if (route != null) {
+      try {
+        await Veilid.instance.releasePrivateRoute(route);
+      } catch (e) {
+        debugPrint('[Veilid] release route failed (non-fatal): $e');
+      }
+    }
+    final context = _routingContext;
+    if (context != null) {
+      try {
+        await context.closeDHTRecord(RecordKey.fromString(address));
+      } catch (_) {
+        // Not open (e.g. offline at startup) — nothing to release.
+      }
+    }
+
+    _contactsChangedController.add(null);
+  }
+
+  /// Replace my rendezvous record with a brand-new address.
+  ///
+  /// The old address is emptied and deleted, so anyone holding it (a leaked
+  /// QR, a former contact) can no longer resolve my route or reach me. The
+  /// caller must share the new QR; existing contacts cannot send until they
+  /// re-link. Returns the new address.
+  Future<String> rotateAddress() async {
+    await _ensureStarted();
+    final context = _routingContext;
+    if (context == null) throw StateError('Veilid is not started');
+    final prefs = await SharedPreferences.getInstance();
+    final oldKeyPair = await _keyPairOrCreate();
+    final oldKey = _myRecordKey;
+
+    if (oldKey != null) {
+      // Clear the route blob so a cached resolution finds nothing, then
+      // delete the record outright (owner-only).
+      try {
+        await context.openDHTRecord(oldKey, writer: oldKeyPair);
+        await context.setDHTValue(
+          oldKey,
+          0,
+          Uint8List(0),
+          options: SetDHTValueOptions(writer: oldKeyPair),
+        );
+        await context.deleteDHTRecord(oldKey);
+      } catch (e) {
+        debugPrint('[Veilid] old address teardown failed: $e');
+      }
+      try {
+        await context.closeDHTRecord(oldKey);
+      } catch (_) {}
+      // The trail stored under the retired address is now unreachable.
+      await _historyRepo?.deleteAddressHistory(oldKey.toString());
+    }
+
+    // Rotate the identity keypair as well. In this Veilid version the record
+    // key is derived from the owner, so reusing the keypair would re-create
+    // the *same* address with only a new encryption secret.
+    final newKeyPair = await Veilid.instance.generateKeyPair(cryptoKindVLD0);
+    await Veilid.instance.saveUserSecret(
+      _myKeyPairSecretKey,
+      Uint8List.fromList(utf8.encode(newKeyPair.toString())),
+    );
+    _keyPair = newKeyPair;
+
+    _myRecordKey = null;
+    _myRouteId = null;
+    await prefs.remove(_myRecordKeyPrefKey);
+
+    final newKey = await _myRecordKeyOrCreate();
+    await publishMyRoute();
+    return newKey.toString();
   }
 
   /// Contact addresses (DHT record key strings), as stored.

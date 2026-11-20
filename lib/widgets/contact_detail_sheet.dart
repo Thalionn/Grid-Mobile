@@ -150,10 +150,53 @@ class _ContactDetailSheetState extends State<ContactDetailSheet> {
                     .setContactPaused(widget.address, !v);
               },
             ),
+            const SizedBox(height: 4),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.person_remove_outlined,
+                  color: Theme.of(context).colorScheme.error),
+              title: Text('Remove contact',
+                  style:
+                      TextStyle(color: Theme.of(context).colorScheme.error)),
+              subtitle: const Text(
+                  'Unlink, stop sharing, and delete their location history'),
+              onTap: _confirmRemove,
+            ),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _confirmRemove() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Remove $_name?'),
+        content: const Text(
+            'You will stop sharing with them and they will stop appearing on '
+            'your map. Their stored location history on this device is deleted. '
+            'Re-linking requires their QR code again.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(dialogContext).colorScheme.error,
+              foregroundColor: Theme.of(dialogContext).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final nav = Navigator.of(context);
+    await VeilidService.instance.removeContact(widget.address);
+    nav.pop();
   }
 
   Widget _infoTile(BuildContext context, String label, String value) {

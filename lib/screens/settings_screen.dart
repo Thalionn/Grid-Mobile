@@ -144,6 +144,64 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  /// Revoke the current rendezvous address and mint a new one. Contacts hold
+  /// the old address, so this deliberately breaks their ability to reach us
+  /// until they scan the new QR.
+  Future<void> _rotateAddress() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Create a new address?'),
+        content: const Text(
+            'Your current address stops working immediately. Anyone who has '
+            'your old QR code can no longer find you, and your contacts must '
+            'scan your new code to reconnect.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Create new address'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final address = await VeilidService.instance.rotateAddress();
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('New address ready'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Share your new QR code from the Contacts tab.'),
+              const SizedBox(height: 12),
+              GridMono(address, size: 10, uppercase: false, maxLines: 3),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Done'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('Could not create a new address: $e')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final incognito = SharingStateNotifier.instance.userIncognito;
@@ -171,6 +229,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
             subtitle: const Text('Go incognito — stop sharing your live location'),
             value: incognito,
             onChanged: (v) => SharingStateNotifier.instance.setUserIncognito(v),
+          ),
+
+          const SizedBox(height: 12),
+          _sectionLabel(context, 'Security'),
+          if (VeilidService.instance.identityStoreInsecure)
+            ListTile(
+              leading: Icon(Icons.warning_amber_rounded,
+                  color: Theme.of(context).colorScheme.error),
+              title: const Text('Identity key is not hardware-protected'),
+              subtitle: const Text(
+                  'This device could not use its secure keystore, so the key '
+                  'is stored on disk. Avoid untrusted backups.'),
+            ),
+          ListTile(
+            leading: const Icon(Icons.autorenew),
+            title: const Text('New address'),
+            subtitle: const Text(
+                'Revoke your current address; contacts must re-link with your new QR'),
+            onTap: _rotateAddress,
           ),
 
           const SizedBox(height: 12),

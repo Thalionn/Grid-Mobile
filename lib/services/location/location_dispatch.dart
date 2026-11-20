@@ -140,6 +140,9 @@ class LocationDispatch {
     _mode = mode;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('sharing_mode', mode.prefValue);
+    // While paused, LocationManager owns the preset (battery-saving); don't
+    // stomp it here or pausing would silently re-enable high accuracy.
+    if (_sharingState.isPaused) return;
     try {
       await libre.LibreLocation.setPreset(mode.preset);
     } catch (_) {
