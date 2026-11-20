@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:veilid/veilid.dart';
 
 /// Veilid integration for the P2P app.
@@ -19,6 +20,11 @@ class VeilidService {
   VeilidRoutingContext? _routingContext;
   StreamSubscription<VeilidUpdate>? _updateSub;
   final List<RouteId> _contacts = [];
+  // Base64url route blobs we've imported, persisted so contacts survive a
+  // restart. Kept in sync with [_contacts].
+  final List<String> _contactBlobs = [];
+
+  static const _contactsPrefKey = 'veilid_contacts';
 
   // Latest location per contact, keyed by the receiving route id (the route
   // this node created and shared). In-memory for the spike.
@@ -36,9 +42,16 @@ class VeilidService {
   Map<String, Map<String, dynamic>> get contactLocations =>
       Map.unmodifiable(_contactLocations);
 
-  Future<void> _ensureStarted() async {
-    if (_started) return;
+  Future<void>? _starting;
 
+  /// Starts Veilid exactly once, even when called concurrently (the identity
+  /// screen loads identity and the share blob in parallel).
+  Future<void> _ensureStarted() {
+    if (_started) return Future.value();
+    return _starting ??= _doStart().whenComplete(() => _starting = null);
+  }
+
+  Future<void> _doStart() async {
     const platformConfig = VeilidFFIConfig(
       logging: VeilidFFIConfigLogging(
         terminal: VeilidFFIConfigLoggingTerminal(
@@ -72,6 +85,37 @@ class VeilidService {
     await Veilid.instance.attach();
 
     _started = true;
+
+    // Re-import persisted contacts. Local import, no network round-trip.
+    await _restoreContacts();
+  }
+
+  Future<void> _restoreContacts() async {
+    final prefs = await SharedPreferences.getInstance();
+    final blobs = prefs.getStringList(_contactsPrefKey) ?? const <String>[];
+    if (blobs.isNotEmpty) {
+      debugPrint('[Veilid] restoring ${blobs.length} saved contact(s)');
+    }
+    for (final blobB64 in blobs) {
+      try {
+        final blob = base64Url.decode(blobB64);
+        final routeId = await Veilid.instance.importRemotePrivateRoute(blob);
+        final id = routeId.toString();
+        if (!_contacts.any((r) => r.toString() == id)) {
+          _contacts.add(routeId);
+        }
+        if (!_contactBlobs.contains(blobB64)) {
+          _contactBlobs.add(blobB64);
+        }
+      } catch (e) {
+        debugPrint('[Veilid] restore contact failed: $e');
+      }
+    }
+  }
+
+  Future<void> _persistContacts() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_contactsPrefKey, _contactBlobs);
   }
 
   void _handleUpdate(VeilidUpdate update) {
@@ -127,6 +171,10 @@ class VeilidService {
     final id = routeId.toString();
     if (!_contacts.any((r) => r.toString() == id)) {
       _contacts.add(routeId);
+    }
+    if (!_contactBlobs.contains(blobB64)) {
+      _contactBlobs.add(blobB64);
+      await _persistContacts();
     }
   }
 
