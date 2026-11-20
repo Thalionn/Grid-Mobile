@@ -18,7 +18,6 @@ class VeilidIdentityScreen extends StatefulWidget {
 
 class _VeilidIdentityScreenState extends State<VeilidIdentityScreen> {
   String? _identity;
-  String? _shareBlob;
   String? _shareError;
   bool _loadingShare = false;
   bool _sending = false;
@@ -30,7 +29,7 @@ class _VeilidIdentityScreenState extends State<VeilidIdentityScreen> {
   void initState() {
     super.initState();
     _loadIdentity();
-    _loadShareBlob();
+    _publishRoute();
     _locSub = VeilidService.instance.locationUpdates.listen((loc) {
       if (mounted) setState(() => _received.add(loc));
     });
@@ -44,21 +43,20 @@ class _VeilidIdentityScreenState extends State<VeilidIdentityScreen> {
 
   Future<void> _loadIdentity() async {
     try {
-      final id = await VeilidService.instance.identity();
+      final id = await VeilidService.instance.myAddress();
       if (mounted) setState(() => _identity = id);
     } catch (e) {
-      if (mounted) setState(() => _shareError = 'Identity error: $e');
+      if (mounted) setState(() => _shareError = 'Address error: $e');
     }
   }
 
-  Future<void> _loadShareBlob() async {
+  Future<void> _publishRoute() async {
     setState(() {
       _loadingShare = true;
       _shareError = null;
     });
     try {
-      final blob = await VeilidService.instance.shareRouteBlobB64();
-      if (mounted) setState(() => _shareBlob = blob);
+      await VeilidService.instance.publishMyRoute();
     } catch (e) {
       if (mounted) setState(() => _shareError = '$e');
     } finally {
@@ -99,7 +97,7 @@ class _VeilidIdentityScreenState extends State<VeilidIdentityScreen> {
           SnackBar(
             content: Text(
               'Sent ${pos.latitude.toStringAsFixed(5)}, ${pos.longitude.toStringAsFixed(5)} '
-              'to ${VeilidService.instance.contactRouteIds.length} contact(s)',
+              'to ${VeilidService.instance.contactAddresses.length} contact(s)',
             ),
           ),
         );
@@ -118,7 +116,7 @@ class _VeilidIdentityScreenState extends State<VeilidIdentityScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final contacts = VeilidService.instance.contactRouteIds;
+    final contacts = VeilidService.instance.contactAddresses;
 
     return Scaffold(
       appBar: AppBar(
@@ -137,35 +135,16 @@ class _VeilidIdentityScreenState extends State<VeilidIdentityScreen> {
         padding: const EdgeInsets.all(20),
         children: [
           Center(
-            child: _loadingShare
+            child: _identity == null
                 ? const CircularProgressIndicator()
-                : _shareBlob != null
-                    ? Column(
-                        children: [
-                          QrImageView(data: _shareBlob!, size: 260),
-                          const SizedBox(height: 8),
-                          Text('Scan this to add you',
-                              style: theme.textTheme.bodySmall),
-                        ],
-                      )
-                    : Column(
-                        children: [
-                          const Icon(Icons.wifi_off, size: 40, color: Colors.orange),
-                          const SizedBox(height: 8),
-                          if (_shareError != null)
-                            Text(
-                              _shareError!,
-                              textAlign: TextAlign.center,
-                              style: theme.textTheme.bodySmall
-                                  ?.copyWith(color: Colors.orange),
-                            ),
-                          const SizedBox(height: 12),
-                          FilledButton.tonal(
-                            onPressed: _loadShareBlob,
-                            child: const Text('Retry'),
-                          ),
-                        ],
-                      ),
+                : Column(
+                    children: [
+                      QrImageView(data: _identity!, size: 260),
+                      const SizedBox(height: 8),
+                      Text('Scan this to add you',
+                          style: theme.textTheme.bodySmall),
+                    ],
+                  ),
           ),
           const SizedBox(height: 8),
           if (_identity != null)
@@ -173,6 +152,25 @@ class _VeilidIdentityScreenState extends State<VeilidIdentityScreen> {
               _identity!,
               textAlign: TextAlign.center,
               style: theme.textTheme.bodySmall,
+            ),
+          if (_shareError != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Column(
+                children: [
+                  Text(
+                    'Publishing error: $_shareError',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: Colors.orange),
+                  ),
+                  const SizedBox(height: 8),
+                  FilledButton.tonal(
+                    onPressed: _publishRoute,
+                    child: const Text('Retry publish'),
+                  ),
+                ],
+              ),
             ),
           const SizedBox(height: 24),
           Row(

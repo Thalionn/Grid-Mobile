@@ -47,7 +47,7 @@ class _VeilidScanScreenState extends State<VeilidScanScreen> {
       _status = 'Importing contact…';
     });
     try {
-      await VeilidService.instance.importContact(code.trim());
+      await VeilidService.instance.addContact(code.trim());
       if (!mounted) return;
       setState(() => _status = 'Contact added ✓');
       await Future.delayed(const Duration(milliseconds: 900));

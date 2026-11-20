@@ -8,23 +8,28 @@ import 'package:veilid/veilid.dart';
 
 /// Veilid integration for the P2P app.
 ///
-/// Identity is a local keypair; contacts are imported private routes. Location
-/// is shared by sending JSON app messages over those routes, and received via
-/// the Veilid update stream.
+/// A user's stable address is a DHT record key (owned by a local keypair).
+/// Private routes are ephemeral, so each node publishes its *current* route
+/// blob to that record (the "rendezvous" pattern): a contact looks up the
+/// address's record to find the live route. Location is shared over those
+/// routes via JSON app messages.
 class VeilidService {
   VeilidService._();
   static final VeilidService instance = VeilidService._();
 
   bool _started = false;
-  String? _identity;
+  KeyPair? _keyPair;
+  RecordKey? _myRecordKey;
   VeilidRoutingContext? _routingContext;
   StreamSubscription<VeilidUpdate>? _updateSub;
-  final List<RouteId> _contacts = [];
-  // Base64url route blobs we've imported, persisted so contacts survive a
-  // restart. Kept in sync with [_contacts].
-  final List<String> _contactBlobs = [];
+
+  // Stable contact addresses (DHT record key strings), persisted. The live
+  // route for each contact is looked up from their DHT record on demand.
+  final List<String> _contactAddresses = [];
+  final Map<String, RouteId> _contactRoutes = {}; // address -> imported route
 
   static const _contactsPrefKey = 'veilid_contacts';
+  static const _myRecordKeyPrefKey = 'veilid_my_record_key';
 
   // Latest location per contact, keyed by the receiving route id (the route
   // this node created and shared). In-memory for the spike.
@@ -45,7 +50,7 @@ class VeilidService {
   Future<void>? _starting;
 
   /// Starts Veilid exactly once, even when called concurrently (the identity
-  /// screen loads identity and the share blob in parallel).
+  /// screen loads the address and publishes the route in parallel).
   Future<void> _ensureStarted() {
     if (_started) return Future.value();
     return _starting ??= _doStart().whenComplete(() => _starting = null);
@@ -86,36 +91,33 @@ class VeilidService {
 
     _started = true;
 
-    // Re-import persisted contacts. Local import, no network round-trip.
+    // Restore persisted contacts (their stable addresses) and re-resolve their
+    // current routes from the DHT. Tolerant: offline contacts stay listed but
+    // unresolved until the next send.
     await _restoreContacts();
   }
 
   Future<void> _restoreContacts() async {
     final prefs = await SharedPreferences.getInstance();
-    final blobs = prefs.getStringList(_contactsPrefKey) ?? const <String>[];
-    if (blobs.isNotEmpty) {
-      debugPrint('[Veilid] restoring ${blobs.length} saved contact(s)');
+    final addresses = prefs.getStringList(_contactsPrefKey) ?? const <String>[];
+    if (addresses.isNotEmpty) {
+      debugPrint('[Veilid] restoring ${addresses.length} saved contact(s)');
     }
-    for (final blobB64 in blobs) {
+    for (final address in addresses) {
+      if (!_contactAddresses.contains(address)) {
+        _contactAddresses.add(address);
+      }
       try {
-        final blob = base64Url.decode(blobB64);
-        final routeId = await Veilid.instance.importRemotePrivateRoute(blob);
-        final id = routeId.toString();
-        if (!_contacts.any((r) => r.toString() == id)) {
-          _contacts.add(routeId);
-        }
-        if (!_contactBlobs.contains(blobB64)) {
-          _contactBlobs.add(blobB64);
-        }
+        _contactRoutes[address] = await _importContactRoute(address);
       } catch (e) {
-        debugPrint('[Veilid] restore contact failed: $e');
+        debugPrint('[Veilid] restore contact route failed for $address: $e');
       }
     }
   }
 
   Future<void> _persistContacts() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(_contactsPrefKey, _contactBlobs);
+    await prefs.setStringList(_contactsPrefKey, _contactAddresses);
   }
 
   void _handleUpdate(VeilidUpdate update) {
@@ -140,23 +142,45 @@ class VeilidService {
     }
   }
 
-  /// Returns a stable identity string (a Veilid public key) suitable for
-  /// rendering into a QR code. Generates one on first use.
-  Future<String> identity() async {
-    if (_identity != null) return _identity!;
-    await _ensureStarted();
-    final keypair = await Veilid.instance.generateKeyPair(cryptoKindVLD0);
-    _identity = keypair.key.toString();
-    return _identity!;
+  Future<KeyPair> _keyPairOrCreate() async {
+    return _keyPair ??= await Veilid.instance.generateKeyPair(cryptoKindVLD0);
   }
 
-  /// Returns a fresh private-route import blob, base64url encoded, for a
-  /// contact to scan. A new route is allocated on every call because Veilid
-  /// private routes are ephemeral: one allocated in a previous session is dead
-  /// after the node restarts. (A stable, restarts-surviving address needs the
-  /// DHT "rendezvous" pattern — publish the current blob under a stable record
-  /// key — which is not implemented yet.)
-  Future<String> shareRouteBlobB64() async {
+  /// Returns my stable address: the DHT record key I publish my current route
+  /// to. Created once and persisted, so it survives restarts.
+  Future<String> myAddress() async {
+    await _ensureStarted();
+    return (await _myRecordKeyOrCreate()).toString();
+  }
+
+  Future<RecordKey> _myRecordKeyOrCreate() async {
+    if (_myRecordKey != null) return _myRecordKey!;
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString(_myRecordKeyPrefKey);
+    if (saved != null && saved.isNotEmpty) {
+      try {
+        _myRecordKey = RecordKey.fromString(saved);
+        return _myRecordKey!;
+      } catch (_) {
+        // Fall through and recreate a fresh record.
+      }
+    }
+    final kp = await _keyPairOrCreate();
+    final context = _routingContext!;
+    final desc = await context.createDHTRecord(
+      cryptoKindVLD0,
+      DHTSchema.dflt(oCnt: 1),
+      owner: kp,
+    );
+    _myRecordKey = desc.key;
+    await prefs.setString(_myRecordKeyPrefKey, desc.key.toString());
+    return _myRecordKey!;
+  }
+
+  /// Allocate a fresh private route and publish its blob to my DHT record so
+  /// contacts can reach me by looking up my stable address. Call on startup
+  /// (and again if the route dies).
+  Future<void> publishMyRoute() async {
     await _ensureStarted();
     // A route can only be allocated once the node is attached with a
     // PublicInternet network class (otherwise newPrivateRoute throws TryAgain).
@@ -164,29 +188,50 @@ class VeilidService {
       timeout: const Duration(seconds: 30),
     );
     final route = await Veilid.instance.newPrivateRoute();
-    return base64Url.encode(route.blob);
+    final kp = await _keyPairOrCreate();
+    final recordKey = await _myRecordKeyOrCreate();
+    final context = _routingContext!;
+    await context.openDHTRecord(recordKey, writer: kp);
+    await context.setDHTValue(
+      recordKey,
+      0,
+      route.blob,
+      options: SetDHTValueOptions(writer: kp),
+    );
+    debugPrint('[Veilid] published route to DHT');
   }
 
-  /// Imports a scanned private-route blob (base64url) as a new contact.
-  Future<void> importContact(String blobB64) async {
-    await _ensureStarted();
-    final blob = base64Url.decode(blobB64);
-    final routeId = await Veilid.instance.importRemotePrivateRoute(blob);
-    final id = routeId.toString();
-    if (!_contacts.any((r) => r.toString() == id)) {
-      _contacts.add(routeId);
+  /// Look up a contact's current route blob from their DHT record and import
+  /// it, returning the route id to send on.
+  Future<RouteId> _importContactRoute(String address) async {
+    final recordKey = RecordKey.fromString(address);
+    final context = _routingContext!;
+    await context.openDHTRecord(recordKey);
+    final value = await context.getDHTValue(recordKey, 0, forceRefresh: true);
+    if (value == null || value.data.isEmpty) {
+      throw StateError('Contact has no published route');
     }
-    if (!_contactBlobs.contains(blobB64)) {
-      _contactBlobs.add(blobB64);
+    return Veilid.instance.importRemotePrivateRoute(value.data);
+  }
+
+  /// Add a contact by their stable address (a DHT record key string).
+  Future<void> addContact(String address) async {
+    await _ensureStarted();
+    final routeId = await _importContactRoute(address);
+    _contactRoutes[address] = routeId;
+    if (!_contactAddresses.contains(address)) {
+      _contactAddresses.add(address);
       await _persistContacts();
     }
   }
 
-  /// Sends the current location to every contact over their private route.
+  /// Sends the current location to every contact, resolving each one's current
+  /// route from their DHT record first (so a route that died or was rebuilt is
+  /// picked up).
   Future<void> sendLocation(double lat, double lng, {double? accuracy}) async {
     await _ensureStarted();
     final context = _routingContext;
-    if (context == null || _contacts.isEmpty) return;
+    if (context == null || _contactAddresses.isEmpty) return;
     final payload = jsonEncode({
       'type': 'location',
       'lat': lat,
@@ -195,16 +240,17 @@ class VeilidService {
       'ts': DateTime.now().toIso8601String(),
     });
     final bytes = Uint8List.fromList(utf8.encode(payload));
-    for (final routeId in _contacts) {
+    for (final address in _contactAddresses) {
       try {
+        final routeId = await _importContactRoute(address);
+        _contactRoutes[address] = routeId;
         await context.appMessage(TargetRouteId(routeId: routeId), bytes);
       } catch (e) {
-        debugPrint('[Veilid] sendLocation failed for ${routeId.toString()}: $e');
+        debugPrint('[Veilid] sendLocation failed for $address: $e');
       }
     }
   }
 
-  /// Imported contact route ids, as strings (in-memory for the spike).
-  List<String> get contactRouteIds =>
-      List.unmodifiable(_contacts.map((r) => r.toString()));
+  /// Contact addresses (DHT record key strings), as stored.
+  List<String> get contactAddresses => List.unmodifiable(_contactAddresses);
 }
