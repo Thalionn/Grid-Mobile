@@ -29,12 +29,17 @@ Future<void> _initLocation() async {
 }
 
 /// Wire the device-local location history repo into VeilidService so received
-/// contact locations are recorded as trails. Construction is cheap (the DB is
-/// opened lazily on first write).
+/// contact locations (and my own fixes) are recorded as trails. Construction is
+/// cheap (the DB is opened lazily on first write).
 void _initHistory() {
   final db = DatabaseService();
   final repo = LocationHistoryRepository(db);
   VeilidService.instance.attachHistoryRepo(repo);
+
+  // Record my own trail from the location stream (the repo throttles points).
+  LocationManager.instance.locationStream.listen((update) {
+    VeilidService.instance.recordMyLocation(update.latitude, update.longitude);
+  });
 }
 
 class GridApp extends StatelessWidget {

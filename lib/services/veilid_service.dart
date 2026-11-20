@@ -37,6 +37,10 @@ class VeilidService {
   // best-effort and skipped when it isn't wired up.
   LocationHistoryRepository? _historyRepo;
 
+  // My current route id, so a RouteChange update can tell when it died.
+  String? _myRouteId;
+  bool _republishing = false;
+
   // Latest location per contact, keyed by the receiving route id (the route
   // this node created and shared). In-memory for the spike.
   final Map<String, Map<String, dynamic>> _contactLocations = {};
@@ -127,7 +131,26 @@ class VeilidService {
   }
 
   void _handleUpdate(VeilidUpdate update) {
-    if (update is! VeilidAppMessage) return;
+    if (update is VeilidAppMessage) {
+      _handleAppMessage(update);
+    } else if (update is VeilidUpdateRouteChange) {
+      _handleRouteChange(update);
+    }
+  }
+
+  /// When my published route dies, mint a fresh one and rewrite my DHT record
+  /// so contacts always resolve a live route.
+  void _handleRouteChange(VeilidUpdateRouteChange update) {
+    final mine = _myRouteId;
+    if (mine == null || !update.deadRoutes.contains(mine)) return;
+    if (_republishing) return;
+    _republishing = true;
+    unawaited(publishMyRoute().catchError((Object e) {
+      debugPrint('[Veilid] route republish failed: $e');
+    }).whenComplete(() => _republishing = false));
+  }
+
+  void _handleAppMessage(VeilidAppMessage update) {
     try {
       final payload = jsonDecode(utf8.decode(update.message));
       if (payload is Map && payload['type'] == 'location') {
@@ -228,6 +251,7 @@ class VeilidService {
       timeout: const Duration(seconds: 30),
     );
     final route = await Veilid.instance.newPrivateRoute();
+    _myRouteId = route.routeId.toString();
     final kp = await _keyPairOrCreate();
     final recordKey = await _myRecordKeyOrCreate();
     final context = _routingContext!;
@@ -239,6 +263,17 @@ class VeilidService {
       options: SetDHTValueOptions(writer: kp),
     );
     debugPrint('[Veilid] published route to DHT');
+  }
+
+  /// Record my own location to the device-local trail (keyed by my address).
+  /// Best-effort; the repo throttles points internally.
+  Future<void> recordMyLocation(double lat, double lng) async {
+    final repo = _historyRepo;
+    if (repo == null) return;
+    final address = await myAddress();
+    unawaited(repo.addLocationPoint(address, lat, lng).catchError((Object e) {
+      debugPrint('[Veilid] my history record failed: $e');
+    }));
   }
 
   /// Look up a contact's current route blob from their DHT record and import
