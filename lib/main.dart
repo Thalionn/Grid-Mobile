@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
@@ -17,6 +19,7 @@ void main() {
   _initLocation();
   _initHistory();
   _initSharing();
+  _initPublish();
 }
 
 /// Best-effort location boot: start tracking so "Send location" has a real
@@ -44,14 +47,38 @@ void _initHistory() {
   });
 }
 
-/// Continuously share my location: on each fix, push to every non-paused
-/// contact unless sharing is paused/incognito.
+/// Continuously share my location: on each fix (motion) and periodically
+/// (stationary), push to every non-paused contact unless sharing is paused.
 void _initSharing() {
   LocationManager.instance.locationStream.listen((update) {
     if (SharingStateNotifier.instance.isPaused) return;
     VeilidService.instance.sendLocation(update.latitude, update.longitude,
         accuracy: update.accuracy);
   });
+
+  // The balanced tracking preset only emits a fix every ~15 min when
+  // stationary, so also share on a fixed cadence.
+  Timer.periodic(const Duration(seconds: 30), (_) {
+    if (SharingStateNotifier.instance.isPaused) return;
+    final pos = LocationManager.instance.currentLatLng;
+    if (pos == null) return;
+    VeilidService.instance.sendLocation(pos.latitude, pos.longitude);
+  });
+}
+
+/// Publish my current route to my DHT record so contacts can resolve my
+/// address. Retries transient failures (route allocation can fail while the
+/// node is still attaching); route death is handled by VeilidService itself.
+Future<void> _initPublish() async {
+  for (var attempt = 0; attempt < 5; attempt++) {
+    try {
+      await VeilidService.instance.publishMyRoute();
+      return;
+    } catch (e) {
+      debugPrint('[Veilid] publish attempt ${attempt + 1} failed: $e');
+      await Future.delayed(const Duration(seconds: 5));
+    }
+  }
 }
 
 class GridApp extends StatelessWidget {
