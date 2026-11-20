@@ -5,6 +5,7 @@ import 'package:grid_frontend/services/location_manager.dart';
 import 'package:grid_frontend/services/sharing_state_notifier.dart';
 import 'package:grid_frontend/services/theme_controller.dart';
 import 'package:grid_frontend/services/units_controller.dart';
+import 'package:grid_frontend/services/veilid_service.dart';
 import 'package:grid_frontend/widgets/grid/grid_mono.dart';
 
 /// Settings tab: sharing, units, appearance, home location, notifications, and
@@ -22,11 +23,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   double _homeRadius = 25;
   bool _autoPauseAtHome = false;
   bool _notifications = true;
+  String? _displayName;
 
   @override
   void initState() {
     super.initState();
     _loadHome();
+    _loadName();
     SharingStateNotifier.instance.addListener(_onChanged);
     UnitsController.instance.addListener(_onChanged);
     ThemeController.instance.addListener(_onChanged);
@@ -97,6 +100,50 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (value is double) await prefs.setDouble(key, value);
   }
 
+  Future<void> _loadName() async {
+    final name = await VeilidService.instance.myName();
+    if (mounted) setState(() => _displayName = name);
+  }
+
+  Future<void> _editName() async {
+    final controller = TextEditingController(text: _displayName ?? '');
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Display name'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 40,
+          decoration: const InputDecoration(
+            hintText: 'Your name',
+            labelText: 'Display name',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(controller.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (name == null) return;
+    await VeilidService.instance.setMyName(name);
+    await _loadName();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(name.trim().isEmpty
+            ? 'Display name cleared'
+            : 'Display name set to "$name"')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final incognito = SharingStateNotifier.instance.userIncognito;
@@ -108,6 +155,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
       body: ListView(
         padding: const EdgeInsets.only(bottom: 32),
         children: [
+          _sectionLabel(context, 'Profile'),
+          ListTile(
+            leading: const CircleAvatar(child: Icon(Icons.person_outline)),
+            title: Text(_displayName ?? 'No name set'),
+            subtitle: const Text('Shown to your contacts'),
+            trailing: const Icon(Icons.edit_outlined, size: 20),
+            onTap: _editName,
+          ),
+
+          const SizedBox(height: 12),
           _sectionLabel(context, 'Sharing'),
           SwitchListTile(
             title: const Text('Pause location sharing'),

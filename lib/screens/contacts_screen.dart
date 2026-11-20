@@ -55,6 +55,10 @@ class _ContactsScreenState extends State<ContactsScreen> {
     return parts.length >= 2 ? parts[1] : address;
   }
 
+  String _displayName(String address) {
+    return VeilidService.instance.getContactName(address) ?? _short(address);
+  }
+
   void _openContact(String address) {
     showModalBottomSheet(
       context: context,
@@ -146,7 +150,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
           else
             for (final address in contacts)
               GridContactRow(
-                name: _short(address),
+                name: _displayName(address),
                 handle: address,
                 statusLabel:
                     VeilidService.instance.isContactPaused(address)

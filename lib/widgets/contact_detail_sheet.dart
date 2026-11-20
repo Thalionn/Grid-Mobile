@@ -31,6 +31,39 @@ class _ContactDetailSheetState extends State<ContactDetailSheet> {
     return parts.length >= 2 ? parts[1] : widget.address;
   }
 
+  String get _name =>
+      VeilidService.instance.getContactName(widget.address) ?? _short;
+
+  Future<void> _editName() async {
+    final controller =
+        TextEditingController(text: VeilidService.instance.getContactName(widget.address) ?? '');
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Edit name'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 40,
+          decoration: const InputDecoration(labelText: 'Name'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(controller.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (name == null) return;
+    await VeilidService.instance.setContactName(widget.address, name);
+    if (mounted) setState(() {});
+  }
+
   @override
   Widget build(BuildContext context) {
     final loc = VeilidService.instance.contactLocations[widget.address];
@@ -60,13 +93,27 @@ class _ContactDetailSheetState extends State<ContactDetailSheet> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             GridSheetHeader(
-              title: _short,
+              title: _name,
               onClose: () => Navigator.of(context).pop(),
             ),
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                Expanded(
+                  child: GridMono(widget.address,
+                      size: 10,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      uppercase: false),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.edit_outlined, size: 18),
+                  tooltip: 'Edit name',
+                  onPressed: _editName,
+                ),
+              ],
+            ),
             const SizedBox(height: 8),
-            GridMono(widget.address,
-                size: 10, maxLines: 2, overflow: TextOverflow.ellipsis, uppercase: false),
-            const SizedBox(height: 16),
             Row(
               children: [
                 _infoTile(context, 'Last seen',

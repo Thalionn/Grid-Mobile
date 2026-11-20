@@ -380,6 +380,10 @@ class _MapContactSheetState extends State<_MapContactSheet> {
     return parts.length >= 2 ? parts[1] : address;
   }
 
+  String _displayName(String address) {
+    return VeilidService.instance.getContactName(address) ?? _short(address);
+  }
+
   Future<void> _openScan() async {
     Navigator.of(context).pop();
     await Navigator.of(context).push(
@@ -420,7 +424,7 @@ class _MapContactSheetState extends State<_MapContactSheet> {
             else
               for (final address in contacts)
                 GridContactRow(
-                  name: _short(address),
+                  name: _displayName(address),
                   handle: address,
                   statusLabel:
                       VeilidService.instance.isContactPaused(address)

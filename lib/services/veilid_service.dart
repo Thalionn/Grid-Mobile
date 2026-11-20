@@ -37,8 +37,15 @@ class VeilidService {
   static const _contactsPrefKey = 'veilid_contacts';
   static const _pausedPrefKey = 'veilid_paused_contacts';
   static const _myRecordKeyPrefKey = 'veilid_my_record_key';
+  static const _myNamePrefKey = 'veilid_display_name';
+  static const _contactNamesPrefKey = 'veilid_contact_names';
   // User-secret key (Veilid protected store) for the identity keypair.
   static const _myKeyPairSecretKey = 'grid_identity_keypair';
+
+  // My display name (published to my DHT record) and the local names I've
+  // assigned to contacts (address -> name).
+  String? _myName;
+  final Map<String, String> _contactNames = {};
 
   // Device-local trail recorder, attached at boot. Optional: recording is
   // best-effort and skipped when it isn't wired up.
@@ -135,6 +142,18 @@ class VeilidService {
     _pausedAddresses
       ..clear()
       ..addAll(prefs.getStringList(_pausedPrefKey) ?? const <String>[]);
+
+    // Restore display name + local contact names.
+    _myName = prefs.getString(_myNamePrefKey);
+    final namesRaw = prefs.getString(_contactNamesPrefKey);
+    if (namesRaw != null && namesRaw.isNotEmpty) {
+      try {
+        final map = jsonDecode(namesRaw) as Map<String, dynamic>;
+        _contactNames
+          ..clear()
+          ..addAll(map.map((k, v) => MapEntry(k, v as String)));
+      } catch (_) {}
+    }
   }
 
   Future<void> _persistContacts() async {
@@ -247,7 +266,7 @@ class VeilidService {
     final context = _routingContext!;
     final desc = await context.createDHTRecord(
       cryptoKindVLD0,
-      DHTSchema.dflt(oCnt: 1),
+      DHTSchema.dflt(oCnt: 2), // subkey 0 = route, subkey 1 = display name
       owner: kp,
     );
     _myRecordKey = desc.key;
@@ -277,7 +296,71 @@ class VeilidService {
       route.blob,
       options: SetDHTValueOptions(writer: kp),
     );
+    // Also publish the display name (subkey 1), if set.
+    final name = await myName();
+    if (name != null && name.isNotEmpty) {
+      await context.setDHTValue(
+        recordKey,
+        1,
+        Uint8List.fromList(utf8.encode(name)),
+        options: SetDHTValueOptions(writer: kp),
+      );
+    }
     debugPrint('[Veilid] published route to DHT');
+  }
+
+  /// My display name (null until set). Published to my DHT record.
+  Future<String?> myName() async {
+    if (_myName != null) return _myName;
+    final prefs = await SharedPreferences.getInstance();
+    _myName = prefs.getString(_myNamePrefKey);
+    return _myName;
+  }
+
+  /// Set my display name and publish it to my DHT record so contacts see it.
+  Future<void> setMyName(String name) async {
+    _myName = name.trim();
+    final prefs = await SharedPreferences.getInstance();
+    if (_myName!.isEmpty) {
+      await prefs.remove(_myNamePrefKey);
+    } else {
+      await prefs.setString(_myNamePrefKey, _myName!);
+    }
+    // Publish to DHT (best-effort; it rides along with the route republish).
+    try {
+      await _ensureStarted();
+      final recordKey = await _myRecordKeyOrCreate();
+      final kp = await _keyPairOrCreate();
+      final context = _routingContext!;
+      await context.openDHTRecord(recordKey, writer: kp);
+      await context.setDHTValue(
+        recordKey,
+        1,
+        Uint8List.fromList(utf8.encode(_myName ?? '')),
+        options: SetDHTValueOptions(writer: kp),
+      );
+    } catch (e) {
+      debugPrint('[Veilid] publish name failed (non-fatal): $e');
+    }
+  }
+
+  /// The local display name I've assigned to a contact, or null.
+  String? getContactName(String address) => _contactNames[address];
+
+  /// Rename a contact locally (their published name is only a default).
+  Future<void> setContactName(String address, String name) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) {
+      _contactNames.remove(address);
+    } else {
+      _contactNames[address] = trimmed;
+    }
+    final prefs = await SharedPreferences.getInstance();
+    if (_contactNames.isEmpty) {
+      await prefs.remove(_contactNamesPrefKey);
+    } else {
+      await prefs.setString(_contactNamesPrefKey, jsonEncode(_contactNames));
+    }
   }
 
   /// Record my own location to the device-local trail (keyed by my address).
@@ -304,14 +387,42 @@ class VeilidService {
     return Veilid.instance.importRemotePrivateRoute(value.data);
   }
 
-  /// Add a contact by their stable address (a DHT record key string).
+  /// Add a contact by their stable address (a DHT record key string). Their
+  /// published display name is used as the default local name.
   Future<void> addContact(String address) async {
     await _ensureStarted();
     final routeId = await _importContactRoute(address);
     _contactRoutes[address] = routeId;
+    _contactRouteResolvedAt[address] = DateTime.now();
+    // Pull the contact's published name as a default (best-effort).
+    try {
+      final name = await _readContactName(address);
+      if (name != null && name.isNotEmpty && !_contactNames.containsKey(address)) {
+        _contactNames[address] = name;
+        await _persistContactNames();
+      }
+    } catch (_) {}
     if (!_contactAddresses.contains(address)) {
       _contactAddresses.add(address);
       await _persistContacts();
+    }
+  }
+
+  Future<String?> _readContactName(String address) async {
+    final recordKey = RecordKey.fromString(address);
+    final context = _routingContext!;
+    await context.openDHTRecord(recordKey);
+    final value = await context.getDHTValue(recordKey, 1);
+    if (value == null || value.data.isEmpty) return null;
+    return utf8.decode(value.data);
+  }
+
+  Future<void> _persistContactNames() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (_contactNames.isEmpty) {
+      await prefs.remove(_contactNamesPrefKey);
+    } else {
+      await prefs.setString(_contactNamesPrefKey, jsonEncode(_contactNames));
     }
   }
 
