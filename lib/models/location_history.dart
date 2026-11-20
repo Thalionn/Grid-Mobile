@@ -27,24 +27,25 @@ class LocationPoint {
 }
 
 class LocationHistory {
-  final String userId;
+  /// The Veilid address (DHT record key) this trail belongs to.
+  final String address;
   final List<LocationPoint> points;
   final DateTime lastUpdated;
 
   LocationHistory({
-    required this.userId,
+    required this.address,
     required this.points,
     required this.lastUpdated,
   });
 
   Map<String, dynamic> toJson() => {
-    'userId': userId,
+    'address': address,
     'points': points.map((p) => p.toJson()).toList(),
     'lastUpdated': lastUpdated.toIso8601String(),
   };
 
   factory LocationHistory.fromJson(Map<String, dynamic> json) => LocationHistory(
-    userId: json['userId'] as String,
+    address: json['address'] as String,
     points: (json['points'] as List)
         .map((p) => LocationPoint.fromJson(p as Map<String, dynamic>))
         .toList(),
@@ -56,5 +57,5 @@ class LocationHistoryConfig {
   static const int maxDaysToStore = 7;
   static const int minSecondsBetweenPoints = 180; // 3 minutes
   static const double minDistanceMeters = 50.0; // Minimum distance to register new point
-  static const int maxPointsPerUser = 3360; // ~1 point every 3 mins for 7 days
+  static const int maxPointsPerAddress = 3360; // ~1 point every 3 mins for 7 days
 }

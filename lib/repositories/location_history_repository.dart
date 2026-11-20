@@ -7,6 +7,11 @@ import 'package:grid_frontend/utilities/encryption_utils.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:encrypt/encrypt.dart' as encrypt;
 
+/// Persists the device-local location trail (history) for a Veilid address.
+///
+/// Each address (a contact, or the local user) has one encrypted history of
+/// [LocationPoint]s. Keyed by the address string rather than the Matrix user
+/// id it used before the P2P rebuild.
 class LocationHistoryRepository {
   final DatabaseService _databaseService;
   final StreamController<String> _historyUpdatesController = StreamController<String>.broadcast();
@@ -17,29 +22,28 @@ class LocationHistoryRepository {
     await db.execute('''
       CREATE TABLE LocationHistory (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        userId TEXT NOT NULL,
+        address TEXT NOT NULL,
         pointsData TEXT NOT NULL,
         lastUpdated TEXT NOT NULL,
         iv TEXT NOT NULL,
-        FOREIGN KEY (userId) REFERENCES Users (id) ON DELETE CASCADE,
-        UNIQUE(userId) ON CONFLICT REPLACE
+        UNIQUE(address) ON CONFLICT REPLACE
       );
     ''');
 
     await db.execute('''
-      CREATE INDEX idx_location_history_user_id ON LocationHistory(userId);
+      CREATE INDEX idx_location_history_address ON LocationHistory(address);
     ''');
   }
 
   Stream<String> get historyUpdates => _historyUpdatesController.stream;
 
-  Future<void> addLocationPoint(String userId, double latitude, double longitude) async {
+  Future<void> addLocationPoint(String address, double latitude, double longitude) async {
     final db = await _databaseService.database;
     final encryptionKey = await _databaseService.getEncryptionKey();
     final now = DateTime.now();
 
     // Get existing history
-    LocationHistory? existingHistory = await getLocationHistory(userId);
+    LocationHistory? existingHistory = await getLocationHistory(address);
     List<LocationPoint> points = existingHistory?.points ?? [];
 
     // Check if we should add this point
@@ -78,19 +82,19 @@ class LocationHistoryRepository {
     points = points.where((p) => p.timestamp.isAfter(cutoffDate)).toList();
 
     // Limit total points
-    if (points.length > LocationHistoryConfig.maxPointsPerUser) {
-      points = points.sublist(points.length - LocationHistoryConfig.maxPointsPerUser);
+    if (points.length > LocationHistoryConfig.maxPointsPerAddress) {
+      points = points.sublist(points.length - LocationHistoryConfig.maxPointsPerAddress);
     }
 
     // Save updated history
-    await _saveLocationHistory(userId, points, now, encryptionKey);
+    await _saveLocationHistory(address, points, now, encryptionKey);
     
     // Notify listeners
-    _historyUpdatesController.add(userId);
+    _historyUpdatesController.add(address);
   }
 
   Future<void> _saveLocationHistory(
-    String userId,
+    String address,
     List<LocationPoint> points,
     DateTime lastUpdated,
     String encryptionKey,
@@ -107,7 +111,7 @@ class LocationHistoryRepository {
     await db.insert(
       'LocationHistory',
       {
-        'userId': userId,
+        'address': address,
         'pointsData': encryptedData,
         'iv': iv.base64,
         'lastUpdated': lastUpdated.toIso8601String(),
@@ -116,14 +120,14 @@ class LocationHistoryRepository {
     );
   }
 
-  Future<LocationHistory?> getLocationHistory(String userId) async {
+  Future<LocationHistory?> getLocationHistory(String address) async {
     final db = await _databaseService.database;
     final encryptionKey = await _databaseService.getEncryptionKey();
     
     final results = await db.query(
       'LocationHistory',
-      where: 'userId = ?',
-      whereArgs: [userId],
+      where: 'address = ?',
+      whereArgs: [address],
       limit: 1,
     );
 
@@ -146,28 +150,28 @@ class LocationHistoryRepository {
         .toList();
 
     return LocationHistory(
-      userId: userId,
+      address: address,
       points: pointsList,
       lastUpdated: DateTime.parse(row['lastUpdated'] as String),
     );
   }
 
-  Future<Map<String, LocationHistory>> getLocationHistoriesForUsers(List<String> userIds) async {
+  Future<Map<String, LocationHistory>> getLocationHistoriesForAddresses(List<String> addresses) async {
     final db = await _databaseService.database;
     final encryptionKey = await _databaseService.getEncryptionKey();
     
-    if (userIds.isEmpty) return {};
+    if (addresses.isEmpty) return {};
 
-    final placeholders = List.filled(userIds.length, '?').join(',');
+    final placeholders = List.filled(addresses.length, '?').join(',');
     final results = await db.rawQuery(
-      'SELECT * FROM LocationHistory WHERE userId IN ($placeholders)',
-      userIds,
+      'SELECT * FROM LocationHistory WHERE address IN ($placeholders)',
+      addresses,
     );
 
     final historyMap = <String, LocationHistory>{};
 
     for (final row in results) {
-      final userId = row['userId'] as String;
+      final address = row['address'] as String;
       
       // Decrypt the data
       final decrypted = decryptText(
@@ -181,8 +185,8 @@ class LocationHistoryRepository {
           .map((json) => LocationPoint.fromJson(json))
           .toList();
 
-      historyMap[userId] = LocationHistory(
-        userId: userId,
+      historyMap[address] = LocationHistory(
+        address: address,
         points: pointsList,
         lastUpdated: DateTime.parse(row['lastUpdated'] as String),
       );
@@ -191,12 +195,12 @@ class LocationHistoryRepository {
     return historyMap;
   }
 
-  Future<void> deleteUserHistory(String userId) async {
+  Future<void> deleteAddressHistory(String address) async {
     final db = await _databaseService.database;
     await db.delete(
       'LocationHistory',
-      where: 'userId = ?',
-      whereArgs: [userId],
+      where: 'address = ?',
+      whereArgs: [address],
     );
   }
 

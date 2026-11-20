@@ -68,7 +68,7 @@ class DatabaseService {
 
     return await openDatabase(
       path,
-      version: 4,  // Increment version for new RoomLocationHistory table
+      version: 5,  // v5: LocationHistory rekeyed from Matrix userId to Veilid address
       onCreate: (db, version) async {
         await _initializeEncryptionKey();
         await LocationRepository.createTable(db);
@@ -82,6 +82,13 @@ class DatabaseService {
         }
         if (oldVersion < 3) {
           await MapIconRepository.createTable(db);
+        }
+        if (oldVersion < 5) {
+          // Rekey LocationHistory: userId column -> address (Veilid record key),
+          // and drop the dangling FK to the removed Matrix Users table.
+          // No data migration: the trail was never populated post-strip.
+          await db.execute('DROP TABLE IF EXISTS LocationHistory');
+          await LocationHistoryRepository.createTable(db);
         }
       },
     );
