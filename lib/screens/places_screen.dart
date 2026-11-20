@@ -1,15 +1,15 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart';
 import 'package:grid_frontend/models/place.dart';
 import 'package:grid_frontend/services/location_manager.dart';
+import 'package:grid_frontend/services/place_presence.dart';
 import 'package:grid_frontend/services/places_service.dart';
 import 'package:grid_frontend/services/veilid_service.dart';
 import 'package:grid_frontend/styles/grid_colors.dart';
-import 'package:grid_frontend/utilities/lat_lng_validation.dart';
 import 'package:grid_frontend/widgets/grid/grid_button.dart';
 import 'package:grid_frontend/widgets/grid/place_search_sheet.dart';
+import 'package:grid_frontend/widgets/grid/tab_active.dart';
 
 /// "Places" tab: saved places (who's currently there) + movement alerts,
 /// modeled on Life360.
@@ -24,17 +24,30 @@ class _PlacesScreenState extends State<PlacesScreen> {
   StreamSubscription<MovementAlert>? _alertSub;
   StreamSubscription<Map<String, dynamic>>? _locSub;
   DateTime _lastLocationRebuild = DateTime.fromMillisecondsSinceEpoch(0);
+  bool _active = true;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final active = TabActive.of(context);
+    if (active == _active) return;
+    _active = active;
+    // Catch up on anything that changed while this tab was hidden.
+    if (_active) setState(() {});
+  }
 
   @override
   void initState() {
     super.initState();
     PlacesService.instance.load();
     _alertSub = VeilidService.instance.movementAlerts.listen((_) {
-      if (mounted) setState(() {});
+      if (!_active || !mounted) return;
+      setState(() {});
     });
     _locSub = VeilidService.instance.locationUpdates.listen((_) {
       // Presence only needs occasional refresh; don't rebuild the whole list on
-      // every incoming fix.
+      // every incoming fix, and skip the work entirely while hidden.
+      if (!_active) return;
       final now = DateTime.now();
       if (!mounted || now.difference(_lastLocationRebuild).inSeconds < 5) return;
       _lastLocationRebuild = now;
@@ -57,18 +70,7 @@ class _PlacesScreenState extends State<PlacesScreen> {
   }
 
   /// Contact addresses currently within [place]'s radius.
-  List<String> _whoIsHere(Place place) {
-    final result = <String>[];
-    VeilidService.instance.contactLocations.forEach((address, loc) {
-      final lat = (loc['lat'] as num?)?.toDouble();
-      final lng = (loc['lng'] as num?)?.toDouble();
-      if (lat == null || lng == null || !isFiniteLatLng(lat, lng)) return;
-      final m = Geolocator.distanceBetween(
-          place.latitude, place.longitude, lat, lng);
-      if (m <= place.radiusMeters) result.add(address);
-    });
-    return result;
-  }
+  List<String> _whoIsHere(Place place) => contactsAtPlace(place);
 
   /// Add a place: search an address/place, or use the current position, then
   /// name it and pick a radius.

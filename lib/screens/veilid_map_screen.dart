@@ -1,13 +1,16 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:grid_frontend/models/location_history.dart';
+import 'package:grid_frontend/models/place.dart';
 import 'package:grid_frontend/screens/map/grid_map_style.dart';
 import 'package:grid_frontend/screens/veilid_scan_screen.dart';
 import 'package:grid_frontend/services/veilid_service.dart';
 import 'package:grid_frontend/services/location_manager.dart';
+import 'package:grid_frontend/services/places_service.dart';
 import 'package:grid_frontend/services/sharing_state_notifier.dart';
 import 'package:grid_frontend/utilities/lat_lng_validation.dart';
 import 'package:grid_frontend/widgets/contact_detail_sheet.dart';
@@ -15,6 +18,8 @@ import 'package:grid_frontend/widgets/grid/grid_button.dart';
 import 'package:grid_frontend/widgets/grid/grid_contact_row.dart';
 import 'package:grid_frontend/widgets/grid/grid_sheet.dart';
 import 'package:grid_frontend/widgets/grid/grid_status_pill.dart';
+import 'package:grid_frontend/widgets/grid/place_info_sheet.dart';
+import 'package:grid_frontend/widgets/grid/tab_active.dart';
 
 /// A minimal P2P map: the basemap plus a marker for each contact's latest
 /// received location, your own position, trails, a sharing pill, and a home
@@ -36,6 +41,7 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
   Circle? _meCircle;
   final Map<String, Circle> _contactCircles = {};
   final Map<String, Line> _trailLines = {};
+  final List<Circle> _placeCircles = [];
   StreamSubscription<Map<String, dynamic>>? _locSub;
   StreamSubscription<String>? _historySub;
   StreamSubscription<void>? _contactsSub;
@@ -51,27 +57,48 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
   bool _trailRefreshQueued = false;
   bool _markerRefreshRunning = false;
   bool _markerRefreshQueued = false;
+  bool _active = true;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final active = TabActive.of(context);
+    if (active == _active) return;
+    _active = active;
+    if (!_active) return;
+    // Catch up: the map was frozen while another tab was visible.
+    _refreshMarkers();
+    _scheduleTrailRefresh();
+    _refreshPlaces();
+    _refreshHome();
+    if (!_centeredOnMe && LocationManager.instance.currentLatLng != null) {
+      _centeredOnMe = true;
+      _centerOnMe();
+    }
+  }
 
   @override
   void initState() {
     super.initState();
     _locSub = VeilidService.instance.locationUpdates.listen((_) {
-      if (mounted) _refreshMarkers();
-      if (mounted) _scheduleTrailRefresh();
+      if (!_active || !mounted) return;
+      _refreshMarkers();
+      _scheduleTrailRefresh();
     });
     LocationManager.instance.addListener(_onLocation);
     SharingStateNotifier.instance.addListener(_onSharingChanged);
+    PlacesService.instance.addListener(_onPlacesChanged);
     _contactsSub = VeilidService.instance.contactsChanged.listen((_) {
-      if (mounted) {
-        setState(() {});
-        _refreshMarkers();
-        _scheduleTrailRefresh();
-      }
+      if (!_active || !mounted) return;
+      setState(() {});
+      _refreshMarkers();
+      _scheduleTrailRefresh();
     });
     // Refresh trails shortly after a point is written (avoids the read/write
     // race and the long stationary interval between location events).
     _historySub = VeilidService.instance.historyUpdates?.listen((_) {
-      if (mounted) _scheduleTrailRefresh();
+      if (!_active || !mounted) return;
+      _scheduleTrailRefresh();
     });
     // The tracker's stationary interval is long (up to ~15 min), so force a
     // fresh fix on open instead of waiting for the next scheduled update.
@@ -84,6 +111,7 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
   void dispose() {
     LocationManager.instance.removeListener(_onLocation);
     SharingStateNotifier.instance.removeListener(_onSharingChanged);
+    PlacesService.instance.removeListener(_onPlacesChanged);
     _trailDebounce?.cancel();
     _locSub?.cancel();
     _historySub?.cancel();
@@ -92,7 +120,7 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
   }
 
   void _onLocation() {
-    if (!mounted) return;
+    if (!mounted || !_active) return;
     _refreshMarkers();
     _scheduleTrailRefresh();
     // Center once the first fix arrives (the camera may have started on the
@@ -279,8 +307,69 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
     )));
   }
 
+  void _onPlacesChanged() {
+    if (!mounted || !_active) return;
+    _refreshPlaces();
+  }
+
+  /// Saved places as translucent radius circles, sized from the current zoom
+  /// so the circle matches the real radius rather than a fixed pixel blob.
+  Future<void> _refreshPlaces() async {
+    final controller = _controller;
+    if (controller == null || !_styleLoaded) return;
+    if (_placeCircles.isNotEmpty) {
+      await controller.removeCircles(List<Circle>.of(_placeCircles));
+      _placeCircles.clear();
+    }
+    final zoom = controller.cameraPosition?.zoom ?? 14;
+    for (final place in PlacesService.instance.places) {
+      if (!isFiniteLatLng(place.latitude, place.longitude)) continue;
+      final metersPerPixel = 40075016.686 *
+          math.cos(place.latitude * math.pi / 180) /
+          (256 * math.pow(2, zoom));
+      if (!metersPerPixel.isFinite || metersPerPixel <= 0) continue;
+      final radiusPx =
+          (place.radiusMeters / metersPerPixel).clamp(8.0, 6000.0);
+      _placeCircles.add(await controller.addCircle(
+        CircleOptions(
+          geometry: LatLng(place.latitude, place.longitude),
+          circleRadius: radiusPx,
+          circleColor: '#14b8a6',
+          circleOpacity: 0.10,
+          circleStrokeWidth: 1.5,
+          circleStrokeColor: '#14b8a6',
+          circleStrokeOpacity: 0.5,
+        ),
+        {'placeId': place.id},
+      ));
+    }
+  }
+
+  void _openPlace(String id) {
+    Place? place;
+    for (final p in PlacesService.instance.places) {
+      if (p.id == id) {
+        place = p;
+        break;
+      }
+    }
+    final selected = place;
+    if (selected == null) return;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => PlaceInfoSheet(place: selected),
+    );
+  }
+
   void _onCircleTapped(Circle circle) {
-    final address = circle.data?['address'] as String?;
+    final data = circle.data;
+    final placeId = data?['placeId'] as String?;
+    if (placeId != null) {
+      _openPlace(placeId);
+      return;
+    }
+    final address = data?['address'] as String?;
     if (address == null) return;
     _openContact(address);
   }
@@ -445,6 +534,10 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
               _controller = controller;
               controller.onCircleTapped.add(_onCircleTapped);
             },
+            onCameraIdle: () {
+              if (!mounted || !_active) return;
+              _refreshPlaces();
+            },
             onStyleLoadedCallback: () {
               if (!mounted) return;
               _styleLoaded = true;
@@ -455,6 +548,7 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
               _refreshMarkers();
               _refreshTrails();
               _refreshHome();
+              _refreshPlaces();
             },
           ),
           Positioned(

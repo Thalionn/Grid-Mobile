@@ -104,7 +104,11 @@ class LocationHistoryRepository {
         now.subtract(Duration(days: LocationHistoryConfig.maxDaysToStore));
     points = points.where((p) => p.timestamp.isAfter(cutoffDate)).toList();
 
-    // Cap the total so a fast fix rate cannot grow the blob without bound.
+    // Keep the last day dense and decimate older days, so the full retention
+    // window fits in the point cap (see compactHistoryPoints).
+    points = compactHistoryPoints(points, now);
+
+    // Hard cap as a final guard.
     if (points.length > LocationHistoryConfig.maxPointsPerAddress) {
       points = points.sublist(
           points.length - LocationHistoryConfig.maxPointsPerAddress);

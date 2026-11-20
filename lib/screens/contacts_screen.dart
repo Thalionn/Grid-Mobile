@@ -11,6 +11,7 @@ import 'package:grid_frontend/widgets/grid/grid_mono.dart';
 import 'package:grid_frontend/widgets/grid/grid_status_pill.dart';
 import 'package:grid_frontend/widgets/grid/grid_address_qr.dart';
 import 'package:grid_frontend/widgets/contact_detail_sheet.dart';
+import 'package:grid_frontend/widgets/grid/tab_active.dart';
 
 /// Contacts tab: my shareable address (QR) plus the list of linked contacts.
 class ContactsScreen extends StatefulWidget {
@@ -23,13 +24,26 @@ class ContactsScreen extends StatefulWidget {
 class _ContactsScreenState extends State<ContactsScreen> {
   String? _address;
   late final StreamSubscription<void> _contactsSub;
+  bool _active = true;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final active = TabActive.of(context);
+    if (active == _active) return;
+    _active = active;
+    // The list may have changed while this tab was hidden (e.g. linking from
+    // the map's contact sheet).
+    if (_active) setState(() {});
+  }
 
   @override
   void initState() {
     super.initState();
     _loadAddress();
     _contactsSub = VeilidService.instance.contactsChanged.listen((_) {
-      if (mounted) setState(() {});
+      if (!_active || !mounted) return;
+      setState(() {});
     });
   }
 

@@ -60,5 +60,46 @@ class LocationHistoryConfig {
   // above GPS jitter when stationary.
   static const int minSecondsBetweenPoints = 20;
   static const double minDistanceMeters = 15.0;
+
+  // The point cap has to coexist with a 7-day retention window. At 20 s a
+  // continuously-moving day is ~4 320 points, so the last day is kept as
+  // recorded and everything older is decimated. Budget: 4 320 + 6 days at one
+  // point per 6 min (1 440) = 5 760 < 6 000.
+  static const Duration denseWindow = Duration(hours: 24);
+  static const Duration coarseInterval = Duration(minutes: 6);
   static const int maxPointsPerAddress = 6000;
+}
+
+/// Downsample a trail so a full [LocationHistoryConfig.maxDaysToStore] window
+/// fits in [LocationHistoryConfig.maxPointsPerAddress]:
+///
+/// - points from the last [LocationHistoryConfig.denseWindow] are kept exactly
+///   as recorded (the part users actually scrub through);
+/// - older points collapse to one per [LocationHistoryConfig.coarseInterval],
+///   which still shows the shape of the day before yesterday at a fraction of
+///   the size.
+///
+/// Expects [points] sorted oldest-first (the repository always appends).
+List<LocationPoint> compactHistoryPoints(
+  List<LocationPoint> points,
+  DateTime now, {
+  Duration denseWindow = LocationHistoryConfig.denseWindow,
+  Duration coarseInterval = LocationHistoryConfig.coarseInterval,
+}) {
+  final denseCutoff = now.subtract(denseWindow);
+  final out = <LocationPoint>[];
+  LocationPoint? lastCoarse;
+  for (final point in points) {
+    if (point.timestamp.isAfter(denseCutoff)) {
+      out.add(point);
+      lastCoarse = null;
+      continue;
+    }
+    if (lastCoarse == null ||
+        point.timestamp.difference(lastCoarse.timestamp) >= coarseInterval) {
+      out.add(point);
+      lastCoarse = point;
+    }
+  }
+  return out;
 }
