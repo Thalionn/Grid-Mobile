@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:veilid/veilid.dart';
+import 'package:grid_frontend/repositories/location_history_repository.dart';
 
 /// Veilid integration for the P2P app.
 ///
@@ -30,6 +31,11 @@ class VeilidService {
 
   static const _contactsPrefKey = 'veilid_contacts';
   static const _myRecordKeyPrefKey = 'veilid_my_record_key';
+  static const _myKeyPairPrefKey = 'veilid_my_keypair';
+
+  // Device-local trail recorder, attached at boot. Optional: recording is
+  // best-effort and skipped when it isn't wired up.
+  LocationHistoryRepository? _historyRepo;
 
   // Latest location per contact, keyed by the receiving route id (the route
   // this node created and shared). In-memory for the spike.
@@ -125,25 +131,59 @@ class VeilidService {
     try {
       final payload = jsonDecode(utf8.decode(update.message));
       if (payload is Map && payload['type'] == 'location') {
+        final lat = (payload['lat'] as num).toDouble();
+        final lng = (payload['lng'] as num).toDouble();
+        final from = payload['from'] as String?;
         final loc = {
-          'lat': (payload['lat'] as num).toDouble(),
-          'lng': (payload['lng'] as num).toDouble(),
+          'lat': lat,
+          'lng': lng,
           'accuracy': (payload['accuracy'] as num?)?.toDouble(),
+          'from': from,
           'routeId': update.routeId,
           'sender': update.sender?.toString(),
           'ts': DateTime.now(),
         };
         _locationController.add(loc);
-        final key = update.routeId ?? update.sender?.toString() ?? 'unknown';
+        final key = from ?? update.routeId ?? update.sender?.toString() ?? 'unknown';
         _contactLocations[key] = loc;
+        // Record the sender's trail to device-local history (best-effort).
+        if (from != null) _recordHistory(from, lat, lng);
       }
     } catch (_) {
       // Ignore malformed/unexpected messages.
     }
   }
 
+  void _recordHistory(String address, double lat, double lng) {
+    final repo = _historyRepo;
+    if (repo == null) return;
+    // Fire-and-forget; a keychain/DB hiccup must not break location delivery.
+    unawaited(repo.addLocationPoint(address, lat, lng).catchError((Object e) {
+      debugPrint('[Veilid] history record failed for $address: $e');
+    }));
+  }
+
+  /// Returns my identity keypair, persisted so it survives restarts.
+  ///
+  /// Veilid's generateKeyPair mints a *fresh random* pair each call (it does
+  /// not persist), so we store it ourselves; otherwise the writer keypair would
+  /// stop matching our DHT record's owner after a restart.
   Future<KeyPair> _keyPairOrCreate() async {
-    return _keyPair ??= await Veilid.instance.generateKeyPair(cryptoKindVLD0);
+    if (_keyPair != null) return _keyPair!;
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString(_myKeyPairPrefKey);
+    if (saved != null && saved.isNotEmpty) {
+      try {
+        _keyPair = KeyPair.fromString(saved);
+        return _keyPair!;
+      } catch (_) {
+        // Fall through and mint a fresh pair.
+      }
+    }
+    final kp = await Veilid.instance.generateKeyPair(cryptoKindVLD0);
+    _keyPair = kp;
+    await prefs.setString(_myKeyPairPrefKey, kp.toString());
+    return kp;
   }
 
   /// Returns my stable address: the DHT record key I publish my current route
@@ -237,6 +277,7 @@ class VeilidService {
       'lat': lat,
       'lng': lng,
       'accuracy': accuracy,
+      'from': await myAddress(),
       'ts': DateTime.now().toIso8601String(),
     });
     final bytes = Uint8List.fromList(utf8.encode(payload));
@@ -253,4 +294,10 @@ class VeilidService {
 
   /// Contact addresses (DHT record key strings), as stored.
   List<String> get contactAddresses => List.unmodifiable(_contactAddresses);
+
+  /// Attach the device-local location history repo so received contact
+  /// locations are recorded as trails. Called once at boot.
+  void attachHistoryRepo(LocationHistoryRepository repo) {
+    _historyRepo = repo;
+  }
 }
