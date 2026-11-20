@@ -25,14 +25,6 @@ class VeilidService {
   final List<String> _contactBlobs = [];
 
   static const _contactsPrefKey = 'veilid_contacts';
-  static const _shareBlobPrefKey = 'veilid_share_blob';
-  static const _shareRouteIdPrefKey = 'veilid_share_route_id';
-
-  // Our own share route, persisted so the QR (our address) is stable across
-  // restarts. The route itself lives in Veilid's protected store; we only
-  // remember its blob + id.
-  String? _shareBlob;
-  String? _shareRouteId;
 
   // Latest location per contact, keyed by the receiving route id (the route
   // this node created and shared). In-memory for the spike.
@@ -158,36 +150,21 @@ class VeilidService {
     return _identity!;
   }
 
-  /// Returns our own share route's import blob, base64url encoded, for a
-  /// contact to scan. Stable across restarts: the route is created once and
-  /// persisted (the route itself lives in Veilid's protected store), so our
-  /// address/QR does not change every launch.
+  /// Returns a fresh private-route import blob, base64url encoded, for a
+  /// contact to scan. A new route is allocated on every call because Veilid
+  /// private routes are ephemeral: one allocated in a previous session is dead
+  /// after the node restarts. (A stable, restarts-surviving address needs the
+  /// DHT "rendezvous" pattern — publish the current blob under a stable record
+  /// key — which is not implemented yet.)
   Future<String> shareRouteBlobB64() async {
     await _ensureStarted();
-    if (_shareBlob != null) return _shareBlob!;
-
-    final prefs = await SharedPreferences.getInstance();
-    final saved = prefs.getString(_shareBlobPrefKey);
-    if (saved != null && saved.isNotEmpty) {
-      _shareBlob = saved;
-      _shareRouteId = prefs.getString(_shareRouteIdPrefKey);
-      debugPrint('[Veilid] reusing persisted share route');
-      return saved;
-    }
-
     // A route can only be allocated once the node is attached with a
     // PublicInternet network class (otherwise newPrivateRoute throws TryAgain).
     await Veilid.instance.waitForAttachmentCondition(
       timeout: const Duration(seconds: 30),
     );
     final route = await Veilid.instance.newPrivateRoute();
-    final blob = base64Url.encode(route.blob);
-    _shareBlob = blob;
-    _shareRouteId = route.routeId.toString();
-    await prefs.setString(_shareBlobPrefKey, blob);
-    await prefs.setString(_shareRouteIdPrefKey, _shareRouteId!);
-    debugPrint('[Veilid] created new share route');
-    return blob;
+    return base64Url.encode(route.blob);
   }
 
   /// Imports a scanned private-route blob (base64url) as a new contact.
