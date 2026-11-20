@@ -27,6 +27,7 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
   StreamSubscription<Map<String, dynamic>>? _locSub;
   StreamSubscription<String>? _historySub;
   bool _centeredOnMe = false;
+  bool _sending = false;
 
   @override
   void initState() {
@@ -134,6 +135,43 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
     }
   }
 
+  Future<void> _sendLocation() async {
+    setState(() => _sending = true);
+    try {
+      if (LocationManager.instance.currentLatLng == null) {
+        await LocationManager.instance.grabLocationAndPing();
+      }
+      final pos = LocationManager.instance.currentLatLng;
+      if (pos == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('No location fix yet — waiting for GPS.')),
+          );
+        }
+        return;
+      }
+      await VeilidService.instance.sendLocation(pos.latitude, pos.longitude);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Shared ${pos.latitude.toStringAsFixed(5)}, ${pos.longitude.toStringAsFixed(5)} '
+              'to ${VeilidService.instance.contactAddresses.length} contact(s)',
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Share failed: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
+  }
+
   Future<void> _centerOnMe() async {
     final controller = _controller;
     final me = LocationManager.instance.currentLatLng;
@@ -158,7 +196,22 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
         : const LatLng(37.7749, -122.4194);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Map')),
+      appBar: AppBar(
+        title: const Text('Map'),
+        actions: [
+          IconButton(
+            icon: _sending
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.share_location),
+            tooltip: 'Share my location',
+            onPressed: _sending ? null : _sendLocation,
+          ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton(
         onPressed: _centerOnMe,
         child: const Icon(Icons.my_location),

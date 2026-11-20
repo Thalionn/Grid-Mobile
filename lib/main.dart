@@ -8,7 +8,7 @@ import 'package:grid_frontend/services/location_manager.dart';
 import 'package:grid_frontend/services/veilid_service.dart';
 import 'package:grid_frontend/services/database_service.dart';
 import 'package:grid_frontend/repositories/location_history_repository.dart';
-import 'package:grid_frontend/screens/veilid_identity_screen.dart';
+import 'package:grid_frontend/screens/home_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -55,7 +55,7 @@ class GridApp extends StatelessWidget {
         theme: _buildTheme(GridTokens.lightScheme()),
         darkTheme: _buildTheme(GridTokens.darkScheme()),
         themeMode: ThemeController.instance.mode,
-        home: const VeilidIdentityScreen(),
+        home: const HomeScreen(),
       ),
     );
   }

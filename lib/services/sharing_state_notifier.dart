@@ -16,6 +16,11 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class SharingStateNotifier extends ChangeNotifier {
+  SharingStateNotifier._() {
+    _load();
+  }
+  static final SharingStateNotifier instance = SharingStateNotifier._();
+
   static const String _userIncognitoKey = 'incognito_mode';
 
   bool _userIncognito = false;
@@ -24,10 +29,6 @@ class SharingStateNotifier extends ChangeNotifier {
   bool get userIncognito => _userIncognito;
   bool get pausedAtHome => _pausedAtHome;
   bool get isPaused => _userIncognito || _pausedAtHome;
-
-  SharingStateNotifier() {
-    _load();
-  }
 
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
