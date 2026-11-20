@@ -61,11 +61,17 @@ class VeilidService {
 
   final StreamController<Map<String, dynamic>> _locationController =
       StreamController<Map<String, dynamic>>.broadcast();
+  final StreamController<void> _contactsChangedController =
+      StreamController<void>.broadcast();
 
   /// Received contact locations, as maps with `lat`, `lng`, `accuracy`,
   /// `routeId`, and `sender`.
   Stream<Map<String, dynamic>> get locationUpdates =>
       _locationController.stream;
+
+  /// Emits whenever the contact list changes (add/pause/rename/restore), so
+  /// the map pill and contacts list can refresh.
+  Stream<void> get contactsChanged => _contactsChangedController.stream;
 
   /// Latest location per contact (keyed by route id), for map markers.
   Map<String, Map<String, dynamic>> get contactLocations =>
@@ -154,6 +160,8 @@ class VeilidService {
           ..addAll(map.map((k, v) => MapEntry(k, v as String)));
       } catch (_) {}
     }
+
+    _contactsChangedController.add(null);
   }
 
   Future<void> _persistContacts() async {
@@ -361,6 +369,7 @@ class VeilidService {
     } else {
       await prefs.setString(_contactNamesPrefKey, jsonEncode(_contactNames));
     }
+    _contactsChangedController.add(null);
   }
 
   /// Record my own location to the device-local trail (keyed by my address).
@@ -406,6 +415,7 @@ class VeilidService {
       _contactAddresses.add(address);
       await _persistContacts();
     }
+    _contactsChangedController.add(null);
   }
 
   Future<String?> _readContactName(String address) async {
@@ -485,6 +495,7 @@ class VeilidService {
     }
     final prefs = await SharedPreferences.getInstance();
     await prefs.setStringList(_pausedPrefKey, _pausedAddresses.toList());
+    _contactsChangedController.add(null);
   }
 
   /// Contact addresses (DHT record key strings), as stored.

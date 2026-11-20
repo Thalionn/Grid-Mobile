@@ -37,6 +37,7 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
   final List<Line> _lines = [];
   StreamSubscription<Map<String, dynamic>>? _locSub;
   StreamSubscription<String>? _historySub;
+  StreamSubscription<void>? _contactsSub;
   bool _centeredOnMe = false;
   bool _sending = false;
 
@@ -49,6 +50,12 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
     });
     LocationManager.instance.addListener(_onLocation);
     SharingStateNotifier.instance.addListener(_onSharingChanged);
+    _contactsSub = VeilidService.instance.contactsChanged.listen((_) {
+      if (mounted) {
+        setState(() {});
+        _refreshMarkers();
+      }
+    });
     // Refresh trails right after a point is written (avoids the read/write
     // race and the long stationary interval between location events).
     _historySub = VeilidService.instance.historyUpdates?.listen((_) {
@@ -67,6 +74,7 @@ class _VeilidMapScreenState extends State<VeilidMapScreen> {
     SharingStateNotifier.instance.removeListener(_onSharingChanged);
     _locSub?.cancel();
     _historySub?.cancel();
+    _contactsSub?.cancel();
     super.dispose();
   }
 

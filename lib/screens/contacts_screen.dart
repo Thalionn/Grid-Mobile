@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
@@ -20,11 +22,21 @@ class ContactsScreen extends StatefulWidget {
 
 class _ContactsScreenState extends State<ContactsScreen> {
   String? _address;
+  late final StreamSubscription<void> _contactsSub;
 
   @override
   void initState() {
     super.initState();
     _loadAddress();
+    _contactsSub = VeilidService.instance.contactsChanged.listen((_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _contactsSub.cancel();
+    super.dispose();
   }
 
   Future<void> _loadAddress() async {
