@@ -5,6 +5,7 @@ import 'package:grid_frontend/styles/tokens.dart';
 import 'package:grid_frontend/styles/grid_colors.dart';
 import 'package:grid_frontend/services/theme_controller.dart';
 import 'package:grid_frontend/services/location_manager.dart';
+import 'package:grid_frontend/services/sharing_state_notifier.dart';
 import 'package:grid_frontend/services/veilid_service.dart';
 import 'package:grid_frontend/services/database_service.dart';
 import 'package:grid_frontend/repositories/location_history_repository.dart';
@@ -15,6 +16,7 @@ void main() {
   runApp(const GridApp());
   _initLocation();
   _initHistory();
+  _initSharing();
 }
 
 /// Best-effort location boot: start tracking so "Send location" has a real
@@ -39,6 +41,16 @@ void _initHistory() {
   // Record my own trail from the location stream (the repo throttles points).
   LocationManager.instance.locationStream.listen((update) {
     VeilidService.instance.recordMyLocation(update.latitude, update.longitude);
+  });
+}
+
+/// Continuously share my location: on each fix, push to every non-paused
+/// contact unless sharing is paused/incognito.
+void _initSharing() {
+  LocationManager.instance.locationStream.listen((update) {
+    if (SharingStateNotifier.instance.isPaused) return;
+    VeilidService.instance.sendLocation(update.latitude, update.longitude,
+        accuracy: update.accuracy);
   });
 }
 

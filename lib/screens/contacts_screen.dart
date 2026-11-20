@@ -1,12 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:grid_frontend/services/location_manager.dart';
 import 'package:grid_frontend/services/veilid_service.dart';
 import 'package:grid_frontend/screens/veilid_scan_screen.dart';
+import 'package:grid_frontend/utilities/time_ago_formatter.dart';
 import 'package:grid_frontend/widgets/grid/grid_avatar.dart';
 import 'package:grid_frontend/widgets/grid/grid_button.dart';
 import 'package:grid_frontend/widgets/grid/grid_contact_row.dart';
 import 'package:grid_frontend/widgets/grid/grid_mono.dart';
+import 'package:grid_frontend/widgets/grid/grid_sheet.dart';
 import 'package:grid_frontend/widgets/grid/grid_status_pill.dart';
 
 /// Contacts tab: my shareable address (QR) plus the list of linked contacts.
@@ -50,9 +54,17 @@ class _ContactsScreenState extends State<ContactsScreen> {
   }
 
   String _short(String address) {
-    // The address is `VLD0:opaque:encryptionKey`; show a compact slice.
     final parts = address.split(':');
     return parts.length >= 2 ? parts[1] : address;
+  }
+
+  void _openContact(String address) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => ContactDetailSheet(address: address),
+    ).then((_) => setState(() {}));
   }
 
   @override
@@ -74,7 +86,6 @@ class _ContactsScreenState extends State<ContactsScreen> {
       body: ListView(
         padding: const EdgeInsets.only(bottom: 24),
         children: [
-          // My address card
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
             child: Column(
@@ -140,11 +151,120 @@ class _ContactsScreenState extends State<ContactsScreen> {
               GridContactRow(
                 name: _short(address),
                 handle: address,
-                statusLabel: 'LINKED',
-                statusKind: GridStatusKind.live,
+                statusLabel:
+                    VeilidService.instance.isContactPaused(address)
+                        ? 'PAUSED'
+                        : 'LINKED',
+                statusKind: VeilidService.instance.isContactPaused(address)
+                    ? GridStatusKind.paused
+                    : GridStatusKind.live,
                 avatarStatus: GridAvatarStatus.idle,
                 showDivider: true,
+                onTap: () => _openContact(address),
               ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Bottom sheet showing a contact's details and the per-contact sharing toggle.
+class ContactDetailSheet extends StatefulWidget {
+  const ContactDetailSheet({super.key, required this.address});
+
+  final String address;
+
+  @override
+  State<ContactDetailSheet> createState() => _ContactDetailSheetState();
+}
+
+class _ContactDetailSheetState extends State<ContactDetailSheet> {
+  bool _paused = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _paused = VeilidService.instance.isContactPaused(widget.address);
+  }
+
+  String get _short {
+    final parts = widget.address.split(':');
+    return parts.length >= 2 ? parts[1] : widget.address;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final loc = VeilidService.instance.contactLocations[widget.address];
+
+    String? lastSeen;
+    String? distance;
+    if (loc != null) {
+      final ts = loc['ts'];
+      lastSeen = ts is DateTime ? ts.toIso8601String() : null;
+      final lat = (loc['lat'] as num?)?.toDouble();
+      final lng = (loc['lng'] as num?)?.toDouble();
+      final me = LocationManager.instance.currentLatLng;
+      if (lat != null && lng != null && me != null) {
+        final m = Geolocator.distanceBetween(
+            me.latitude, me.longitude, lat, lng);
+        distance = m < 1000 ? '${m.round()} m' : '${(m / 1000).toStringAsFixed(1)} km';
+      }
+    }
+
+    return GridSheetContainer(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            GridSheetHeader(
+              title: _short,
+              onClose: () => Navigator.of(context).pop(),
+            ),
+            const SizedBox(height: 8),
+            GridMono(widget.address, size: 10, maxLines: 2,
+                overflow: TextOverflow.ellipsis, uppercase: false),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                _infoTile(context, 'Last seen',
+                    lastSeen == null ? '—' : TimeAgoFormatter.format(lastSeen)),
+                const SizedBox(width: 16),
+                _infoTile(context, 'Distance', distance ?? '—'),
+              ],
+            ),
+            const SizedBox(height: 16),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Share my location'),
+              subtitle: const Text('Stop or resume sharing your live location with this contact'),
+              value: !_paused,
+              onChanged: (v) async {
+                setState(() => _paused = !v);
+                await VeilidService.instance
+                    .setContactPaused(widget.address, !v);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _infoTile(BuildContext context, String label, String value) {
+    return Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label.toUpperCase(),
+              style: TextStyle(
+                  fontSize: 10,
+                  letterSpacing: 0.6,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant)),
+          const SizedBox(height: 4),
+          Text(value, style: Theme.of(context).textTheme.titleMedium),
         ],
       ),
     );

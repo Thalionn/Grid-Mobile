@@ -29,8 +29,13 @@ class VeilidService {
   // route for each contact is looked up from their DHT record on demand.
   final List<String> _contactAddresses = [];
   final Map<String, RouteId> _contactRoutes = {}; // address -> imported route
+  final Map<String, DateTime> _contactRouteResolvedAt = {};
+
+  // Addresses the user has paused (per-contact sharing off), persisted.
+  final Set<String> _pausedAddresses = {};
 
   static const _contactsPrefKey = 'veilid_contacts';
+  static const _pausedPrefKey = 'veilid_paused_contacts';
   static const _myRecordKeyPrefKey = 'veilid_my_record_key';
   // User-secret key (Veilid protected store) for the identity keypair.
   static const _myKeyPairSecretKey = 'grid_identity_keypair';
@@ -121,10 +126,15 @@ class VeilidService {
       }
       try {
         _contactRoutes[address] = await _importContactRoute(address);
+        _contactRouteResolvedAt[address] = DateTime.now();
       } catch (e) {
         debugPrint('[Veilid] restore contact route failed for $address: $e');
       }
     }
+    // Restore per-contact pause state.
+    _pausedAddresses
+      ..clear()
+      ..addAll(prefs.getStringList(_pausedPrefKey) ?? const <String>[]);
   }
 
   Future<void> _persistContacts() async {
@@ -305,9 +315,9 @@ class VeilidService {
     }
   }
 
-  /// Sends the current location to every contact, resolving each one's current
-  /// route from their DHT record first (so a route that died or was rebuilt is
-  /// picked up).
+  /// Sends [lat],[lng] to every non-paused contact. Caches each contact's
+  /// route for a short TTL so continuous sharing doesn't re-hit the DHT on
+  /// every fix; a stale/dead route is re-resolved after the TTL.
   Future<void> sendLocation(double lat, double lng, {double? accuracy}) async {
     await _ensureStarted();
     final context = _routingContext;
@@ -322,14 +332,48 @@ class VeilidService {
     });
     final bytes = Uint8List.fromList(utf8.encode(payload));
     for (final address in _contactAddresses) {
+      if (_pausedAddresses.contains(address)) continue;
       try {
-        final routeId = await _importContactRoute(address);
-        _contactRoutes[address] = routeId;
+        final routeId = await _routeFor(address);
         await context.appMessage(TargetRouteId(routeId: routeId), bytes);
       } catch (e) {
+        // Clear the cache so the next send re-resolves a possibly-dead route.
+        _contactRoutes.remove(address);
+        _contactRouteResolvedAt.remove(address);
         debugPrint('[Veilid] sendLocation failed for $address: $e');
       }
     }
+  }
+
+  /// Cached route for [address], re-resolved every [_routeTtl].
+  Future<RouteId> _routeFor(String address) async {
+    final cached = _contactRoutes[address];
+    final at = _contactRouteResolvedAt[address];
+    if (cached != null &&
+        at != null &&
+        DateTime.now().difference(at) < _routeTtl) {
+      return cached;
+    }
+    final routeId = await _importContactRoute(address);
+    _contactRoutes[address] = routeId;
+    _contactRouteResolvedAt[address] = DateTime.now();
+    return routeId;
+  }
+
+  static const _routeTtl = Duration(minutes: 5);
+
+  /// Whether sharing with [address] is paused.
+  bool isContactPaused(String address) => _pausedAddresses.contains(address);
+
+  /// Pause or resume sharing with [address].
+  Future<void> setContactPaused(String address, bool paused) async {
+    if (paused) {
+      _pausedAddresses.add(address);
+    } else {
+      _pausedAddresses.remove(address);
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_pausedPrefKey, _pausedAddresses.toList());
   }
 
   /// Contact addresses (DHT record key strings), as stored.

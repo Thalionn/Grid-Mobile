@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:grid_frontend/services/location_manager.dart';
 import 'package:grid_frontend/services/sharing_state_notifier.dart';
 import 'package:grid_frontend/services/theme_controller.dart';
 import 'package:grid_frontend/services/units_controller.dart';
 import 'package:grid_frontend/widgets/grid/grid_mono.dart';
 
-/// Settings tab: sharing, units, appearance, and app info — the pieces of the
-/// original settings that still apply to the P2P app (no account/Matrix).
+/// Settings tab: sharing, units, appearance, home location, notifications, and
+/// app info — the pieces of the original settings that still apply to the
+/// P2P app (no account/Matrix).
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
 
@@ -14,9 +17,15 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  String? _homeLocation; // "lat,lng"
+  double _homeRadius = 25;
+  bool _autoPauseAtHome = false;
+  bool _notifications = true;
+
   @override
   void initState() {
     super.initState();
+    _loadHome();
     SharingStateNotifier.instance.addListener(_onChanged);
     UnitsController.instance.addListener(_onChanged);
     ThemeController.instance.addListener(_onChanged);
@@ -34,9 +43,59 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (mounted) setState(() {});
   }
 
+  Future<void> _loadHome() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      _homeLocation = prefs.getString('home_location');
+      _homeRadius = prefs.getDouble('home_radius') ?? 25;
+      _autoPauseAtHome = prefs.getBool('auto_pause_at_home_enabled') ?? false;
+      _notifications = prefs.getBool('notifications_enabled') ?? true;
+    });
+  }
+
+  Future<void> _setHomeToCurrent() async {
+    final me = LocationManager.instance.currentLatLng;
+    if (me == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No location fix yet — move a little and retry.')),
+        );
+      }
+      return;
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+        'home_location', '${me.latitude},${me.longitude}');
+    await prefs.setDouble('home_radius', _homeRadius);
+    await _loadHome();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Home location set to your current position')),
+      );
+    }
+  }
+
+  Future<void> _clearHome() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('home_location');
+    await prefs.remove('home_radius');
+    await _loadHome();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Home location cleared')),
+      );
+    }
+  }
+
+  Future<void> _setPref(String key, Object? value) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (value is bool) await prefs.setBool(key, value);
+    if (value is double) await prefs.setDouble(key, value);
+  }
+
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final incognito = SharingStateNotifier.instance.userIncognito;
     final speedUnit = UnitsController.instance.speedUnit;
     final themeMode = ThemeController.instance.mode;
@@ -52,6 +111,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
             subtitle: const Text('Go incognito — stop sharing your live location'),
             value: incognito,
             onChanged: (v) => SharingStateNotifier.instance.setUserIncognito(v),
+          ),
+
+          const SizedBox(height: 12),
+          _sectionLabel(context, 'Home'),
+          ListTile(
+            title: const Text('Home location'),
+            subtitle: _homeLocation == null
+                ? const Text('Not set')
+                : GridMono(_homeLocation!, size: 10, uppercase: false),
+            leading: const Icon(Icons.home_outlined),
+          ),
+          ListTile(
+            title: const Text('Set home to current position'),
+            leading: const Icon(Icons.my_location),
+            onTap: _setHomeToCurrent,
+          ),
+          ListTile(
+            title: const Text('Clear home location'),
+            leading: const Icon(Icons.close),
+            enabled: _homeLocation != null,
+            onTap: _clearHome,
+          ),
+          SwitchListTile(
+            title: const Text('Auto-pause at home'),
+            subtitle: const Text('Pause sharing automatically when you arrive home'),
+            value: _autoPauseAtHome,
+            onChanged: (v) {
+              setState(() => _autoPauseAtHome = v);
+              _setPref('auto_pause_at_home_enabled', v);
+            },
+          ),
+
+          const SizedBox(height: 12),
+          _sectionLabel(context, 'Notifications'),
+          SwitchListTile(
+            title: const Text('Location update notifications'),
+            subtitle: const Text('Notify when a contact shares a new location'),
+            value: _notifications,
+            onChanged: (v) {
+              setState(() => _notifications = v);
+              _setPref('notifications_enabled', v);
+            },
           ),
 
           const SizedBox(height: 12),
@@ -96,10 +197,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: Text('Grid'),
             subtitle: Text('Peer-to-peer location sharing over Veilid'),
           ),
-          ListTile(
-            title: const Text('Your address'),
-            subtitle: const GridMono('Tap Contacts to view your QR',
-                size: 10, uppercase: false),
+          const ListTile(
+            title: Text('Your address'),
+            subtitle: GridMono('View it in the Contacts tab', size: 10, uppercase: false),
             enabled: false,
           ),
         ],
