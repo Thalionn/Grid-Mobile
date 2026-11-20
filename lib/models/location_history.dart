@@ -55,7 +55,10 @@ class LocationHistory {
 
 class LocationHistoryConfig {
   static const int maxDaysToStore = 7;
-  static const int minSecondsBetweenPoints = 180; // 3 minutes
-  static const double minDistanceMeters = 50.0; // Minimum distance to register new point
-  static const int maxPointsPerAddress = 3360; // ~1 point every 3 mins for 7 days
+  // Denser trail (was 180s / 50m): record roughly every 20s when moving
+  // (below the tracker's 30s broadcast throttle), with a 15m floor to stay
+  // above GPS jitter when stationary.
+  static const int minSecondsBetweenPoints = 20;
+  static const double minDistanceMeters = 15.0;
+  static const int maxPointsPerAddress = 6000;
 }
